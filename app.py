@@ -145,13 +145,22 @@ def get_client():
 
 def research_prompt(query, existing):
     tracked = "; ".join(f"{a['id']}|{a['name']}|{a['tier']}|{a['status']}" for a in existing) or "none"
-    return f"""You are the research engine of a crypto airdrop tracker dashboard. Today is {datetime.now():%A %d %B %Y}.
+    today = datetime.now()
+    return f"""You are the research engine of a crypto airdrop tracker dashboard. Today is {today:%A %d %B %Y}.
 
 USER REQUEST: "{query}"
 
 CURRENTLY TRACKED (id|name|tier|status): {tracked}
 
-Use web search to research this. Search the open web AND recent X/Twitter posts (add "x.com" to queries, search project handles) for announcements, points programs, snapshot rumors and TGE news. Prefer official docs/blogs and reputable trackers; treat unverified X rumors as tier "watch" with confidence "low".
+You have a budget of at most 6 web searches — each one costs real money, so spend it like it's tight, not like it's free:
+1. Open with exactly 1 broad query that includes the current month and year (e.g. "solana airdrop {today:%B %Y}") — a query with no date terms tends to return stale evergreen pages, and one well-chosen query beats three vague ones.
+2. Spend at most 2-3 more on the single most promising candidate that turns up: project name + "airdrop"/"snapshot"/"TGE", or project name + "x.com" for the team's own announcement. Don't fan out across multiple candidates in parallel — pick the strongest lead and verify it.
+3. Don't re-check a CURRENTLY TRACKED project unless the request specifically asks to re-score it.
+4. Stop as soon as you have one verifiable finding — don't keep searching to be thorough. If nothing solid turns up within budget, stop and say so; don't spend your last searches chasing a weak lead.
+
+Search the open web AND recent X/Twitter posts for announcements, points programs, snapshot rumors and TGE news. If you exhaust your search budget or find no genuinely new information, say so plainly in "summary" and fall back to re-scoring what's already tracked rather than inventing a "hot" project without evidence.
+
+SOURCE QUALITY: this space is full of programmatic-SEO "Top 10 airdrops to farm in 2026" listicles that repeat rumors from each other with no real signal behind them — treat those as noise, not evidence. A finding only counts as verified if it traces back to a PRIMARY source: the project's own domain/docs, the project's own X/Twitter account, or a named reputable crypto data source (DeFiLlama, CoinGecko, a chain foundation's own blog, an established crypto news outlet). If the only thing you found on a candidate is an aggregator roundup with no primary source behind it, don't add or upgrade it — mention it's unverified in "summary" instead of adding it as a tracked airdrop. Every URL you put in "sources" must be a primary source, never a listicle or roundup page. Treat unverified X rumors as tier "watch" with confidence "low".
 
 For EACH airdrop estimate "probability": an integer 0-100 = chance it actually pays out a token/reward to a normal farmer within ~12 months, grounded in evidence. Anchor: token confirmed + live snapshot 75-90; live points, credible team, no token terms 45-65; points with no announced destination 30-45; rumor-only 10-25; ended/dead <10. Put the one-line reasoning in "probability_note" citing the concrete signal.
 
@@ -164,7 +173,7 @@ def run_research(client, query):
         model=MODEL,
         max_tokens=6000,
         tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 6}],
-        output_config={"format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
         messages=[{"role": "user", "content": research_prompt(query, st.session_state.airdrops)}],
     )
     text = next(b.text for b in msg.content if getattr(b, "type", "") == "text")
