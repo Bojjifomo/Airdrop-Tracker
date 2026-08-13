@@ -44,6 +44,7 @@ RESEARCH_SCHEMA = {
                     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
                     "probability": {"type": "integer"},
                     "probability_note": {"type": "string"},
+                    "evidence_date": {"type": "string"},
                     "description": {"type": "string"},
                     "steps": {"type": "array", "items": {"type": "string"}},
                     "sources": {
@@ -59,7 +60,7 @@ RESEARCH_SCHEMA = {
                 "required": [
                     "id", "name", "chain", "tier", "status", "capital", "effort",
                     "risk", "confidence", "probability", "probability_note",
-                    "description", "steps", "sources",
+                    "evidence_date", "description", "steps", "sources",
                 ],
                 "additionalProperties": False,
             },
@@ -164,6 +165,8 @@ SOURCE QUALITY: this space is full of programmatic-SEO "Top 10 airdrops to farm 
 
 For EACH airdrop estimate "probability": an integer 0-100 = chance it actually pays out a token/reward to a normal farmer within ~12 months, grounded in evidence. Anchor: token confirmed + live snapshot 75-90; live points, credible team, no token terms 45-65; points with no announced destination 30-45; rumor-only 10-25; ended/dead <10. Put the one-line reasoning in "probability_note" citing the concrete signal.
 
+EVIDENCE RECENCY: put the date of the most recent primary-source evidence behind your score in "evidence_date", as "YYYY-MM" (or "YYYY-MM-DD" when you have the exact day) — e.g. the date of the announcement, docs update, or post you're relying on. Use "unknown" only if the source genuinely carries no date. Recency is part of the judgement, not decoration: evidence more than ~3 months old is a weaker basis for a live score, so cap "confidence" at "medium" when your newest evidence is that old, and say so in "probability_note" (e.g. "points live per docs, but nothing newer than Nov 2025"). A stale program may have quietly ended — treat old evidence as uncertainty, not as confirmation.
+
 Be terse. Max 5 airdrops, sources max 2 each. "capital" like "$25+", "effort" like "15 min/wk". "tier" is one of recommended|worth|extras|watch. "status" is one of points_live|rewards_live|token_confirmed|no_token|rumored|ended.
 
 Rules: reuse existing ids when updating a tracked project. Only include airdrops relevant to the request. Keep every string short."""
@@ -180,12 +183,14 @@ def run_research(client, query):
     return json.loads(text)
 
 def apply_result(result):
-    now = datetime.now().strftime("%d %b %H:%M")
+    stamp = datetime.now()
+    now = stamp.strftime("%d %b %H:%M")
     ads = st.session_state.airdrops
     for rid in result.get("removals", []):
         ads = [a for a in ads if a["id"] != rid]
     for item in result.get("airdrops", []):
         item["updated"] = now
+        item["updated_ts"] = stamp.isoformat(timespec="seconds")
         idx = next((i for i, a in enumerate(ads) if a["id"] == item["id"]), None)
         if idx is not None:
             ads[idx] = {**ads[idx], **item}
@@ -239,6 +244,16 @@ small.note {color:#888;}
 def prob_color(p):
     return "#2f9e7f" if p >= 65 else "#e0a723" if p >= 40 else "#cc5f43"
 
+def days_since_check(a):
+    """Days since this entry was last re-scored, or None if never/unparseable."""
+    ts = a.get("updated_ts")
+    if not ts:
+        return None
+    try:
+        return (datetime.now() - datetime.fromisoformat(ts)).days
+    except ValueError:
+        return None
+
 # ----------------------------- header ---------------------------------------
 st.title("🪂 Airdrop Desk")
 c1, c2 = st.columns([3, 1])
@@ -291,6 +306,23 @@ def render_card(a):
             f"risk {a.get('risk','')} · conf {a.get('confidence','')}</div>",
             unsafe_allow_html=True,
         )
+
+        ev = a.get("evidence_date")
+        age = days_since_check(a)
+        bits = []
+        if ev and ev != "unknown":
+            bits.append(f"evidence {ev}")
+        if age is None:
+            bits.append("never re-scored")
+        elif age >= 7:
+            bits.append(f"checked {age}d ago")
+        if bits:
+            stale = age is None or age >= 7
+            colour = "#cc5f43" if stale else "#888"
+            st.markdown(
+                f"<div class='meta' style='color:{colour}'>{' · '.join(bits)}</div>",
+                unsafe_allow_html=True,
+            )
 
         with st.expander("Steps & sources"):
             for s in a.get("steps", []):
