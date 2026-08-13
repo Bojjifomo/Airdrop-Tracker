@@ -145,13 +145,20 @@ def get_client():
 
 def research_prompt(query, existing):
     tracked = "; ".join(f"{a['id']}|{a['name']}|{a['tier']}|{a['status']}" for a in existing) or "none"
-    return f"""You are the research engine of a crypto airdrop tracker dashboard. Today is {datetime.now():%A %d %B %Y}.
+    today = datetime.now()
+    return f"""You are the research engine of a crypto airdrop tracker dashboard. Today is {today:%A %d %B %Y}.
 
 USER REQUEST: "{query}"
 
 CURRENTLY TRACKED (id|name|tier|status): {tracked}
 
-Use web search to research this. Search the open web AND recent X/Twitter posts (add "x.com" to queries, search project handles) for announcements, points programs, snapshot rumors and TGE news. Prefer official docs/blogs and reputable trackers; treat unverified X rumors as tier "watch" with confidence "low".
+You have up to 12 web searches — spend them deliberately, don't burn the budget on redundant rephrasing:
+1. Start with 1-2 broad queries that include the current month and year (e.g. "solana airdrop {today:%B %Y}", "new solana points program {today.year}") to surface anything genuinely recent — a query with no date terms tends to return stale evergreen pages.
+2. Follow up with 2-3 targeted queries on the specific candidates those turn up: project name + "airdrop" / "snapshot" / "TGE", and project name + "x.com" or "twitter" for the team's own announcements.
+3. Only re-check a CURRENTLY TRACKED project if the request asks to re-score it or it's directly relevant — don't spend searches re-confirming things you're not being asked about.
+4. If you're still short on verified specifics after ~8 searches, stop searching and write up what you have rather than continuing to burn the budget — an honest, evidence-grounded answer from partial research beats none at all.
+
+Search the open web AND recent X/Twitter posts for announcements, points programs, snapshot rumors and TGE news. Prefer official docs/blogs and reputable trackers; treat unverified X rumors as tier "watch" with confidence "low". If you exhaust your search budget or find no genuinely new information, say so plainly in "summary" and fall back to re-scoring what's already tracked rather than inventing a "hot" project without evidence.
 
 For EACH airdrop estimate "probability": an integer 0-100 = chance it actually pays out a token/reward to a normal farmer within ~12 months, grounded in evidence. Anchor: token confirmed + live snapshot 75-90; live points, credible team, no token terms 45-65; points with no announced destination 30-45; rumor-only 10-25; ended/dead <10. Put the one-line reasoning in "probability_note" citing the concrete signal.
 
@@ -162,9 +169,9 @@ Rules: reuse existing ids when updating a tracked project. Only include airdrops
 def run_research(client, query):
     msg = client.messages.create(
         model=MODEL,
-        max_tokens=6000,
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 6}],
-        output_config={"format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
+        max_tokens=8000,
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 12}],
+        output_config={"effort": "high", "format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
         messages=[{"role": "user", "content": research_prompt(query, st.session_state.airdrops)}],
     )
     text = next(b.text for b in msg.content if getattr(b, "type", "") == "text")
