@@ -1,0 +1,24 @@
+# --- secrets: NEVER commit these ---
+.streamlit/secrets.toml
+.env
+*.key
+
+# --- app runtime data (regenerated; use the sidebar backup to keep a copy) ---
+airdrops.json
+airdrops_backup.json
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- tooling / os ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+.idea/
+.vscode/

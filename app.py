@@ -19,8 +19,56 @@ import streamlit as st
 from anthropic import Anthropic
 
 # ----------------------------- config ---------------------------------------
-MODEL = "claude-sonnet-4-6"          # swap to claude-opus-4-8 for deeper research
+MODEL = "claude-sonnet-5"            # swap to claude-opus-5 for deeper research
 DATA_FILE = "airdrops.json"
+RESEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "airdrops": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "chain": {"type": "string"},
+                    "tier": {"type": "string", "enum": ["recommended", "worth", "extras", "watch"]},
+                    "status": {"type": "string", "enum": [
+                        "points_live", "rewards_live", "token_confirmed",
+                        "no_token", "rumored", "ended",
+                    ]},
+                    "capital": {"type": "string"},
+                    "effort": {"type": "string"},
+                    "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "probability": {"type": "integer"},
+                    "probability_note": {"type": "string"},
+                    "description": {"type": "string"},
+                    "steps": {"type": "array", "items": {"type": "string"}},
+                    "sources": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"title": {"type": "string"}, "url": {"type": "string"}},
+                            "required": ["title", "url"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": [
+                    "id", "name", "chain", "tier", "status", "capital", "effort",
+                    "risk", "confidence", "probability", "probability_note",
+                    "description", "steps", "sources",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "removals": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "airdrops", "removals"],
+    "additionalProperties": False,
+}
 TIERS = [
     ("recommended", "Recommended", "Strongest reward evidence, executable steps, capital-efficient."),
     ("worth", "Worth Farming", "Good fit if capital and risk suit you; reward link less certain."),
@@ -107,24 +155,20 @@ Use web search to research this. Search the open web AND recent X/Twitter posts 
 
 For EACH airdrop estimate "probability": an integer 0-100 = chance it actually pays out a token/reward to a normal farmer within ~12 months, grounded in evidence. Anchor: token confirmed + live snapshot 75-90; live points, credible team, no token terms 45-65; points with no announced destination 30-45; rumor-only 10-25; ended/dead <10. Put the one-line reasoning in "probability_note" citing the concrete signal.
 
-Respond with ONLY valid JSON, no markdown fences, no prose. Be terse. Max 5 airdrops. Schema:
-{{"summary":"2-3 sentence answer (mention key dates and if chances moved)","airdrops":[{{"id":"slug","name":"","chain":"","tier":"recommended|worth|extras|watch","status":"points_live|rewards_live|token_confirmed|no_token|rumored|ended","capital":"$25+","effort":"15 min/wk","risk":"low|medium|high","confidence":"high|medium|low","probability":55,"probability_note":"one line, cite the signal","description":"one sentence","steps":["max 3 short steps"],"sources":[{{"title":"short","url":"https://..."}}]}}],"removals":["ids that are dead/ended, optional"]}}
+Be terse. Max 5 airdrops, sources max 2 each. "capital" like "$25+", "effort" like "15 min/wk". "tier" is one of recommended|worth|extras|watch. "status" is one of points_live|rewards_live|token_confirmed|no_token|rumored|ended.
 
-Rules: reuse existing ids when updating a tracked project. Only include airdrops relevant to the request. Keep every string short. sources max 2."""
+Rules: reuse existing ids when updating a tracked project. Only include airdrops relevant to the request. Keep every string short."""
 
 def run_research(client, query):
     msg = client.messages.create(
         model=MODEL,
-        max_tokens=1500,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 6}],
+        max_tokens=6000,
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 6}],
+        output_config={"format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
         messages=[{"role": "user", "content": research_prompt(query, st.session_state.airdrops)}],
     )
-    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-    text = text.replace("```json", "").replace("```", "").strip()
-    s, e = text.find("{"), text.rfind("}")
-    if s == -1 or e == -1:
-        raise ValueError("No JSON found in model response")
-    return json.loads(text[s:e + 1])
+    text = next(b.text for b in msg.content if getattr(b, "type", "") == "text")
+    return json.loads(text)
 
 def apply_result(result):
     now = datetime.now().strftime("%d %b %H:%M")
