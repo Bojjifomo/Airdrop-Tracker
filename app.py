@@ -152,11 +152,11 @@ USER REQUEST: "{query}"
 
 CURRENTLY TRACKED (id|name|tier|status): {tracked}
 
-You have up to 12 web searches — spend them deliberately, don't burn the budget on redundant rephrasing:
-1. Start with 1-2 broad queries that include the current month and year (e.g. "solana airdrop {today:%B %Y}", "new solana points program {today.year}") to surface anything genuinely recent — a query with no date terms tends to return stale evergreen pages.
-2. Follow up with 2-3 targeted queries on the specific candidates those turn up: project name + "airdrop" / "snapshot" / "TGE", and project name + "x.com" or "twitter" for the team's own announcements.
-3. Only re-check a CURRENTLY TRACKED project if the request asks to re-score it or it's directly relevant — don't spend searches re-confirming things you're not being asked about.
-4. If you're still short on verified specifics after ~8 searches, stop searching and write up what you have rather than continuing to burn the budget — an honest, evidence-grounded answer from partial research beats none at all.
+You have a budget of at most 6 web searches — each one costs real money, so spend it like it's tight, not like it's free:
+1. Open with exactly 1 broad query that includes the current month and year (e.g. "solana airdrop {today:%B %Y}") — a query with no date terms tends to return stale evergreen pages, and one well-chosen query beats three vague ones.
+2. Spend at most 2-3 more on the single most promising candidate that turns up: project name + "airdrop"/"snapshot"/"TGE", or project name + "x.com" for the team's own announcement. Don't fan out across multiple candidates in parallel — pick the strongest lead and verify it.
+3. Don't re-check a CURRENTLY TRACKED project unless the request specifically asks to re-score it.
+4. Stop as soon as you have one verifiable finding — don't keep searching to be thorough. If nothing solid turns up within budget, stop and say so; don't spend your last searches chasing a weak lead.
 
 Search the open web AND recent X/Twitter posts for announcements, points programs, snapshot rumors and TGE news. Prefer official docs/blogs and reputable trackers; treat unverified X rumors as tier "watch" with confidence "low". If you exhaust your search budget or find no genuinely new information, say so plainly in "summary" and fall back to re-scoring what's already tracked rather than inventing a "hot" project without evidence.
 
@@ -169,9 +169,9 @@ Rules: reuse existing ids when updating a tracked project. Only include airdrops
 def run_research(client, query):
     msg = client.messages.create(
         model=MODEL,
-        max_tokens=8000,
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 12}],
-        output_config={"effort": "high", "format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
+        max_tokens=6000,
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 6}],
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
         messages=[{"role": "user", "content": research_prompt(query, st.session_state.airdrops)}],
     )
     text = next(b.text for b in msg.content if getattr(b, "type", "") == "text")
