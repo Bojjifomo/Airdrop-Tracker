@@ -152,13 +152,13 @@ USER REQUEST: "{query}"
 
 CURRENTLY TRACKED (id|name|tier|status): {tracked}
 
-You have a budget of at most 6 web searches — each one costs real money, so spend it like it's tight, not like it's free:
-1. Open with exactly 1 broad query that includes the current month and year (e.g. "solana airdrop {today:%B %Y}") — a query with no date terms tends to return stale evergreen pages, and one well-chosen query beats three vague ones.
-2. Spend at most 2-3 more on the single most promising candidate that turns up: project name + "airdrop"/"snapshot"/"TGE", or project name + "x.com" for the team's own announcement. Don't fan out across multiple candidates in parallel — pick the strongest lead and verify it.
-3. Don't re-check a CURRENTLY TRACKED project unless the request specifically asks to re-score it.
-4. Stop as soon as you have one verifiable finding — don't keep searching to be thorough. If nothing solid turns up within budget, stop and say so; don't spend your last searches chasing a weak lead.
+You have a budget of at most 8 web searches — spend them on genuine discovery, not busywork:
+1. Open with 1-2 broad, date-anchored queries (e.g. "solana airdrop {today:%B %Y}", "new solana points program {today.year}") aimed at finding something NOT already in CURRENTLY TRACKED — a query with no date terms tends to surface stale evergreen pages.
+2. Spend up to 4 more verifying the single strongest NEW candidate that turns up: project name + "airdrop"/"snapshot"/"TGE", or the team's own X/Twitter account. Don't fan out across many candidates in parallel — pick the strongest lead and confirm it properly.
+3. Only spend a search re-checking a CURRENTLY TRACKED project if the request specifically asks to re-score it — your job when asked for new/hot picks is to find something new, not re-confirm what's already on the board.
+4. QUALITY BAR: CURRENTLY TRACKED is the bar a new candidate has to clear — a real protocol with a live points/rewards program, an identifiable team, and a primary source behind it, not a vague rumor. A candidate weaker than what's already tracked isn't worth adding just to have something "new" to show. If nothing you find clears that bar, say so plainly in "summary" instead of padding the list or silently re-listing what's already tracked.
 
-Search the open web AND recent X/Twitter posts for announcements, points programs, snapshot rumors and TGE news. If you exhaust your search budget or find no genuinely new information, say so plainly in "summary" and fall back to re-scoring what's already tracked rather than inventing a "hot" project without evidence.
+Search the open web AND recent X/Twitter posts for announcements, points programs, snapshot rumors and TGE news.
 
 SOURCE QUALITY: this space is full of programmatic-SEO "Top 10 airdrops to farm in 2026" listicles that repeat rumors from each other with no real signal behind them — treat those as noise, not evidence. A finding only counts as verified if it traces back to a PRIMARY source: the project's own domain/docs, the project's own X/Twitter account, or a named reputable crypto data source (DeFiLlama, CoinGecko, a chain foundation's own blog, an established crypto news outlet). If the only thing you found on a candidate is an aggregator roundup with no primary source behind it, don't add or upgrade it — mention it's unverified in "summary" instead of adding it as a tracked airdrop. Every URL you put in "sources" must be a primary source, never a listicle or roundup page. Treat unverified X rumors as tier "watch" with confidence "low".
 
@@ -172,7 +172,7 @@ def run_research(client, query):
     msg = client.messages.create(
         model=MODEL,
         max_tokens=6000,
-        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 6}],
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 8}],
         output_config={"effort": "medium", "format": {"type": "json_schema", "schema": RESEARCH_SCHEMA}},
         messages=[{"role": "user", "content": research_prompt(query, st.session_state.airdrops)}],
     )
