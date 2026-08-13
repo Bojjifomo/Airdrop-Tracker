@@ -13,7 +13,7 @@ Deploy on Streamlit Community Cloud:
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 from anthropic import Anthropic
@@ -21,6 +21,7 @@ from anthropic import Anthropic
 # ----------------------------- config ---------------------------------------
 MODEL = "claude-sonnet-5"            # swap to claude-opus-5 for deeper research
 DATA_FILE = "airdrops.json"
+CACHE_TTL_MIN = 120                  # repeat of an identical query inside this window is free
 RESEARCH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -182,8 +183,10 @@ def run_research(client, query):
     text = next(b.text for b in msg.content if getattr(b, "type", "") == "text")
     return json.loads(text)
 
-def apply_result(result):
-    stamp = datetime.now()
+def apply_result(result, stamp=None):
+    # A cached result carries the timestamp of the call that produced it, so the
+    # card's "checked Nd ago" marker stays honest instead of claiming it's fresh.
+    stamp = stamp or datetime.now()
     now = stamp.strftime("%d %b %H:%M")
     ads = st.session_state.airdrops
     for rid in result.get("removals", []):
@@ -204,6 +207,19 @@ def apply_result(result):
 def ask(query):
     st.session_state.pending = query.strip()
 
+def cache_key(query):
+    return " ".join(query.lower().split())
+
+def cached_research(query):
+    """Return (result, stamp) for a recent identical query, else None."""
+    hit = st.session_state.research_cache.get(cache_key(query))
+    if not hit:
+        return None
+    stamp = datetime.fromisoformat(hit["at"])
+    if datetime.now() - stamp > timedelta(minutes=CACHE_TTL_MIN):
+        return None
+    return hit["result"], stamp
+
 # ----------------------------- state init -----------------------------------
 st.set_page_config(page_title="Airdrop Desk", page_icon="🪂", layout="wide")
 if "airdrops" not in st.session_state:
@@ -212,6 +228,7 @@ if "airdrops" not in st.session_state:
     st.session_state.strategy = s["strategy"]
     st.session_state.log = s["log"]
     st.session_state.pending = None
+    st.session_state.research_cache = {}
 
 client = get_client()
 
@@ -224,11 +241,28 @@ if st.session_state.get("pending"):
     if client is None:
         st.session_state.log.append({"who": "desk", "text": "No API key set. Add ANTHROPIC_API_KEY in secrets.", "at": now})
     else:
-        with st.spinner("Searching web + X, scoring chances…"):
-            try:
-                apply_result(run_research(client, q))
-            except Exception as ex:
-                st.session_state.log.append({"who": "desk", "text": f"Research failed: {ex}", "at": now})
+        hit = cached_research(q)
+        if hit:
+            result, stamp = hit
+            apply_result(result, stamp)
+            mins = int((datetime.now() - stamp).total_seconds() // 60)
+            st.session_state.log.append({
+                "who": "desk",
+                "text": f"↺ Reused the answer from {mins} min ago — no API call. "
+                        f"Reword the question to force a fresh search.",
+                "at": now,
+            })
+        else:
+            with st.spinner("Searching web + X, scoring chances…"):
+                try:
+                    result = run_research(client, q)
+                    st.session_state.research_cache[cache_key(q)] = {
+                        "result": result,
+                        "at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                    apply_result(result)
+                except Exception as ex:
+                    st.session_state.log.append({"who": "desk", "text": f"Research failed: {ex}", "at": now})
     save_state()
 
 # ----------------------------- styles ---------------------------------------
