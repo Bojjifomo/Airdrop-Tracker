@@ -19,6 +19,7 @@ import streamlit as st
 from anthropic import Anthropic
 
 import lp_scanner
+import lp_sources
 
 # ----------------------------- config ---------------------------------------
 MODEL = "claude-sonnet-5"            # swap to claude-opus-5 for deeper research
@@ -394,19 +395,30 @@ def render_lp_hit(h):
         m[2].metric("Pool fee APR", f"{apr:,.0f}%" if isinstance(apr, (int, float)) else "—")
 
         st.markdown(
-            f"<div class='meta'>vol 24h {fmt_usd(h.get('volume_usd'))} · "
+            f"<div class='meta'>vol {fmt_usd(h.get('volume_usd'))} · "
             f"TVL {fmt_usd(h.get('reserve_usd'))} · "
             f"fee tier {h.get('fee_rate', 0) * 100:.2f}% ({h.get('fee_source', '?')}) · "
             f"cap via {h.get('mcap_source', '?')}</div>",
             unsafe_allow_html=True,
         )
+
+        safety = []
+        for label, key in (("buy tax", "buy_tax"), ("sell tax", "sell_tax")):
+            tax = h.get(key)
+            if isinstance(tax, (int, float)) and tax > 0:
+                safety.append(f"{label} {tax:.1f}%")
+        if isinstance(h.get("holder_count"), (int, float)):
+            safety.append(f"{int(h['holder_count']):,} holders")
+        if safety:
+            st.markdown(f"<div class='meta'>{' · '.join(safety)}</div>", unsafe_allow_html=True)
+
         st.markdown(
             f"<small class='note'>passed {h.get('runs_passed', 1)} scan(s) · "
             f"first seen {h.get('first_seen', '—')}</small>",
             unsafe_allow_html=True,
         )
         if h.get("url"):
-            st.markdown(f"[Open pool chart]({h['url']})")
+            st.markdown(f"[Open chart]({h['url']})")
 
 
 def render_lp_tab():
@@ -425,13 +437,14 @@ def render_lp_tab():
         age = scan_age_minutes(state)
         head = st.columns(4)
         head[0].metric("Hits", len(state.get("hits", [])))
-        head[1].metric("Pools scanned", state.get("scanned", 0))
+        head[1].metric("Coins scanned", state.get("scanned", 0))
         head[2].metric("ETH price", fmt_usd(state.get("eth_usd")))
         head[3].metric("Last scan", f"{age:.0f} min ago" if age is not None else "—")
         st.markdown(
-            f"<div class='meta'>filter: mcap &gt; {fmt_usd(f.get('min_mcap_usd'))} · "
+            f"<div class='meta'>source {state.get('source', '?')}/{state.get('network', '?')} · "
+            f"filter: mcap &gt; {fmt_usd(f.get('min_mcap_usd'))} · "
             f"fees &gt; {f.get('min_fees_eth')} ETH / {f.get('fee_window')} · "
-            f"network {state.get('network', '?')}</div>",
+            f"ETH price {state.get('eth_price_source', '?')}</div>",
             unsafe_allow_html=True,
         )
         if age is not None and age > 10:
@@ -439,15 +452,31 @@ def render_lp_tab():
                 f"Last scan was {age:.0f} minutes ago — the 3-minute job looks stopped. "
                 "Check the cron entry or the `--loop` process."
             )
+        if any(str(h.get("fee_source", "")).startswith("assumed") for h in state.get("hits", [])):
+            st.info(
+                "This source does not report pool fee tiers, so fees are volume × an "
+                "assumed rate. Guess the tier wrong and every fee figure moves by that "
+                "multiple — set `--fee-rate` to match the launchpad you're targeting, "
+                "or use the geckoterminal source, which reports the real tier per pool.",
+                icon="⚠️",
+            )
 
-    if st.button("Scan now", type="primary"):
-        with st.spinner("Scanning Robinhood Chain pools…"):
-            try:
-                result = lp_scanner.scan()
-                lp_scanner.save_state(result)
-                st.rerun()
-            except lp_scanner.ScanError as ex:
-                st.error(f"Scan failed: {ex}")
+    with st.form("lp_scan"):
+        c = st.columns([2, 2, 1])
+        source = c[0].selectbox("Source", sorted(lp_sources.SOURCES),
+                                index=sorted(lp_sources.SOURCES).index(
+                                    state.get("source") or lp_scanner.DEFAULT_SOURCE))
+        eth = c[1].number_input("ETH price (0 = derive/env)", min_value=0.0,
+                                value=float(state.get("eth_usd") or 0.0), step=50.0)
+        c[2].markdown("<br>", unsafe_allow_html=True)
+        if c[2].form_submit_button("Scan now", type="primary", use_container_width=True):
+            with st.spinner(f"Scanning Robinhood Chain via {source}…"):
+                try:
+                    lp_scanner.save_state(
+                        lp_scanner.scan(source=source, eth_usd=eth or None))
+                    st.rerun()
+                except lp_scanner.ScanError as ex:
+                    st.error(f"Scan failed: {ex}")
 
     hits = state.get("hits", [])
     if hits:
@@ -471,14 +500,20 @@ def render_lp_tab():
                 )
 
     with st.expander("Run the trigger every 3 minutes"):
+        picked = state.get("source") or lp_scanner.DEFAULT_SOURCE
         st.markdown("Add this to `crontab -e` (adjust the paths):")
         st.code(
             f"*/3 * * * * cd {os.getcwd()} && "
-            "/usr/bin/python3 lp_scanner.py --quiet >> lp_scanner.log 2>&1",
+            f"/usr/bin/python3 lp_scanner.py --source {picked} --quiet "
+            ">> lp_scanner.log 2>&1",
             language="bash",
         )
         st.markdown("Or keep it in the foreground without cron:")
-        st.code("python lp_scanner.py --loop 180", language="bash")
+        st.code(f"python lp_scanner.py --source {picked} --loop 180", language="bash")
+        st.markdown(
+            "`gmgn` and `custom` cannot derive the ETH price themselves — set "
+            "`ETH_USD`, or `ETH_PRICE_URL` + `ETH_PRICE_PATH` for a live feed."
+        )
         st.caption(
             "The scanner writes lp_hits.json; this tab only reads it, so the trigger "
             "keeps running whether or not the dashboard is open."
