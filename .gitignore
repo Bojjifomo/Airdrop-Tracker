@@ -6,6 +6,8 @@
 # --- app runtime data (regenerated; use the sidebar backup to keep a copy) ---
 airdrops.json
 airdrops_backup.json
+lp_hits.json
+lp_scanner.log
 
 # --- python ---
 __pycache__/

@@ -13,10 +13,12 @@ Deploy on Streamlit Community Cloud:
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 from anthropic import Anthropic
+
+import lp_scanner
 
 # ----------------------------- config ---------------------------------------
 MODEL = "claude-sonnet-5"            # swap to claude-opus-5 for deeper research
@@ -348,7 +350,144 @@ def render_card(a):
                 st.session_state.strategy.remove(a["id"])
             save_state(); st.rerun()
 
-tab_board, tab_strategy = st.tabs(["Board", f"Strategy ({len(st.session_state.strategy)})"])
+# ----------------------------- LP trigger -----------------------------------
+def fmt_usd(v):
+    if not isinstance(v, (int, float)):
+        return "—"
+    for cutoff, suffix, div in ((1e9, "B", 1e9), (1e6, "M", 1e6), (1e3, "k", 1e3)):
+        if abs(v) >= cutoff:
+            return f"${v / div:,.2f}{suffix}"
+    return f"${v:,.0f}"
+
+
+def scan_age_minutes(state):
+    ts = state.get("generated_at")
+    if not ts:
+        return None
+    try:
+        when = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds() / 60
+
+
+def render_lp_hit(h):
+    with st.container(border=True):
+        top = st.columns([3, 2])
+        title = h.get("symbol") or h.get("pool_name") or "unknown"
+        badge = " 🆕" if h.get("is_new") else ""
+        top[0].markdown(
+            f"**{title}**{badge}  \n<span class='meta'>{h.get('token_name') or ''}</span>",
+            unsafe_allow_html=True,
+        )
+        top[1].markdown(
+            f"<div style='text-align:right'><span class='chip'>{h.get('dex') or 'dex ?'}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        m = st.columns(3)
+        m[0].metric("Market cap", fmt_usd(h.get("mcap_usd")))
+        m[1].metric("Fees 24h", f"{h.get('fees_eth', 0):.2f} ETH")
+        apr = h.get("fee_apr")
+        m[2].metric("Pool fee APR", f"{apr:,.0f}%" if isinstance(apr, (int, float)) else "—")
+
+        st.markdown(
+            f"<div class='meta'>vol 24h {fmt_usd(h.get('volume_usd'))} · "
+            f"TVL {fmt_usd(h.get('reserve_usd'))} · "
+            f"fee tier {h.get('fee_rate', 0) * 100:.2f}% ({h.get('fee_source', '?')}) · "
+            f"cap via {h.get('mcap_source', '?')}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<small class='note'>passed {h.get('runs_passed', 1)} scan(s) · "
+            f"first seen {h.get('first_seen', '—')}</small>",
+            unsafe_allow_html=True,
+        )
+        if h.get("url"):
+            st.markdown(f"[Open pool chart]({h['url']})")
+
+
+def render_lp_tab():
+    st.subheader("LP Trigger — Robinhood Chain")
+    st.caption(
+        "Fires on coins whose pool clears both gates. Fees are pool-wide fees over the "
+        "window (volume × fee tier), not your share — your cut scales with your share "
+        "of the pool's liquidity."
+    )
+
+    state = lp_scanner.load_state()
+    if not state.get("generated_at"):
+        st.info("No scan has run yet. Start the 3-minute trigger, or scan once now.")
+    else:
+        f = state.get("filters", {})
+        age = scan_age_minutes(state)
+        head = st.columns(4)
+        head[0].metric("Hits", len(state.get("hits", [])))
+        head[1].metric("Pools scanned", state.get("scanned", 0))
+        head[2].metric("ETH price", fmt_usd(state.get("eth_usd")))
+        head[3].metric("Last scan", f"{age:.0f} min ago" if age is not None else "—")
+        st.markdown(
+            f"<div class='meta'>filter: mcap &gt; {fmt_usd(f.get('min_mcap_usd'))} · "
+            f"fees &gt; {f.get('min_fees_eth')} ETH / {f.get('fee_window')} · "
+            f"network {state.get('network', '?')}</div>",
+            unsafe_allow_html=True,
+        )
+        if age is not None and age > 10:
+            st.warning(
+                f"Last scan was {age:.0f} minutes ago — the 3-minute job looks stopped. "
+                "Check the cron entry or the `--loop` process."
+            )
+
+    if st.button("Scan now", type="primary"):
+        with st.spinner("Scanning Robinhood Chain pools…"):
+            try:
+                result = lp_scanner.scan()
+                lp_scanner.save_state(result)
+                st.rerun()
+            except lp_scanner.ScanError as ex:
+                st.error(f"Scan failed: {ex}")
+
+    hits = state.get("hits", [])
+    if hits:
+        st.divider()
+        cols = st.columns(2)
+        for i, h in enumerate(hits):
+            with cols[i % 2]:
+                render_lp_hit(h)
+    elif state.get("generated_at"):
+        st.caption("No coin cleared the filter in the last scan.")
+
+    history = state.get("history", [])
+    if history:
+        with st.expander(f"Scan history (last {len(history)} runs)"):
+            for run in reversed(history[-20:]):
+                names = ", ".join(n for n in run.get("hits", []) if n) or "—"
+                st.markdown(
+                    f"<div class='meta'>{run.get('at', '')} · "
+                    f"{run.get('hit_count', 0)} hit(s) of {run.get('scanned', 0)} · {names}</div>",
+                    unsafe_allow_html=True,
+                )
+
+    with st.expander("Run the trigger every 3 minutes"):
+        st.markdown("Add this to `crontab -e` (adjust the paths):")
+        st.code(
+            f"*/3 * * * * cd {os.getcwd()} && "
+            "/usr/bin/python3 lp_scanner.py --quiet >> lp_scanner.log 2>&1",
+            language="bash",
+        )
+        st.markdown("Or keep it in the foreground without cron:")
+        st.code("python lp_scanner.py --loop 180", language="bash")
+        st.caption(
+            "The scanner writes lp_hits.json; this tab only reads it, so the trigger "
+            "keeps running whether or not the dashboard is open."
+        )
+
+
+tab_board, tab_strategy, tab_lp = st.tabs(
+    ["Board", f"Strategy ({len(st.session_state.strategy)})", "LP Trigger"]
+)
 
 with tab_board:
     for tid, label, note in TIERS:
@@ -384,6 +523,9 @@ with tab_strategy:
         for i, a in enumerate(picks):
             with cols[i % 2]:
                 render_card(a)
+
+with tab_lp:
+    render_lp_tab()
 
 # ----------------------------- sidebar: backup ------------------------------
 with st.sidebar:
