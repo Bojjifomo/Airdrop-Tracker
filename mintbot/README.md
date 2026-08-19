@@ -7,6 +7,42 @@ the contract, and broadcasts the moment the phase actually opens.
 Pre-filled for **Robinhood Chain** (chain id `4663`, RPC
 `https://rpc.mainnet.chain.robinhood.com`), but nothing in it is chain-specific.
 
+There are two ways to drive it: a control panel, or the CLI.
+
+## Control panel
+
+```
+pip install -r requirements.txt -r requirements-mintbot.txt
+streamlit run mintbot_ui.py
+```
+
+Four tabs, in order:
+
+1. **Wallets** — paste a private key and it is encrypted into a keystore under
+   `keys/` before anything touches disk; the plaintext is never written, never
+   stored in session state, and never logged. One password covers every keystore
+   you add, and you are asked for it once when the bot starts. You can also point
+   an entry at an environment variable instead. Per-wallet quantity, merkle proof
+   and an armed/disarmed toggle live here.
+2. **The drop** — paste the contract address, hit *Analyse*, and it pulls the
+   verified ABI and offers the ranked mint entrypoints and phase flags as
+   choices. Set price, quantity, gas ceiling, poll interval and the spend cap,
+   then save. This writes the same `mintbot.toml` the CLI reads.
+3. **Preflight** — the full check, broadcasting nothing.
+4. **Run** — dry run or live (live needs you to type `MINT`), then a live event
+   feed while it watches and fires.
+
+It handles private keys, so run it **on your own machine**. If it detects hosted
+infrastructure — Streamlit Community Cloud, Spaces, Cloud Run, Heroku, Render,
+Railway, Codespaces — key entry is disabled outright. `MINTBOT_ALLOW_KEYS=1` is
+the deliberate override for a VPS you control yourself. Do not deploy this page
+to Streamlit Community Cloud.
+
+The panel is a separate app from the airdrop tracker in `app.py`; neither
+touches the other's state.
+
+## CLI
+
 ```
 pip install -r requirements-mintbot.txt
 
@@ -19,6 +55,9 @@ python -m mintbot preflight    # check funds, gas, ABI and liveness — sends no
 python -m mintbot run          # dry run: signs everything, broadcasts nothing
 python -m mintbot run --live   # arm for real
 ```
+
+Both read and write the same two files, so you can set up in the panel and run
+from the terminal, or the other way round.
 
 ## How it decides the mint is open
 
@@ -90,9 +129,13 @@ keystore = "~/keys/alt1.json"      # encrypted keystore JSON
 password_env = "ALT1_PASSWORD"     # omit to be prompted instead
 ```
 
-Prefer the keystore form. `mintbot.toml`, `wallets.toml` and `mintbot.jsonl` are
-all gitignored, and `Wallet.__repr__` redacts the key so it cannot leak through a
-traceback or a log line.
+Prefer the keystore form — the control panel creates one for you. Keystores are
+written `0600` inside a `0700` directory. `keys/`, `mintbot.toml`,
+`wallets.toml`, `mintbot.jsonl` and `mintbot.run.log` are all gitignored, and
+`Wallet.__repr__` redacts the key so it cannot leak through a traceback or a log
+line.
+
+Back up `keys/` somewhere safe. Losing those files loses the wallets.
 
 Use wallets whose balance you would be willing to lose. A bot that holds a
 signed transaction is only as safe as the machine it runs on.
@@ -145,4 +188,6 @@ python -m pytest tests/ -q
 
 No test touches an external network. `tests/test_integration.py` runs the full
 watch/arm/fire loop against a stub JSON-RPC node on `127.0.0.1`, including real
-signing and signature recovery from the broadcast bytes.
+signing and signature recovery from the broadcast bytes, and
+`tests/test_ui_app.py` drives the control panel itself — adding a wallet through
+the form and running preflight against that same stub node.

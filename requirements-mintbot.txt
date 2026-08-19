@@ -1,4 +1,7 @@
-# Dependencies for the mint bot only. The Streamlit tracker (requirements.txt)
-# does not need these, so deploying the tracker stays lean.
+# Dependencies for the mint bot. The Streamlit tracker (requirements.txt) does
+# not need these, so deploying the tracker stays lean.
 #   pip install -r requirements-mintbot.txt
+#
+# The control panel (mintbot_ui.py) also needs streamlit, which is already in
+# requirements.txt. The CLI (python -m mintbot) needs only what is listed here.
 web3>=7.0

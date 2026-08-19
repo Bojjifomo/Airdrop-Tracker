@@ -3,10 +3,14 @@
 .env
 *.key
 
-# --- mint bot: local config, fetched ABIs, and run logs ---
+# --- mint bot: encrypted keys, local config, fetched ABIs, and run logs ---
+# keys/ holds encrypted keystores. Losing them loses the wallets; committing
+# them puts your funds one password guess away from anyone with repo access.
+keys/
 mintbot.toml
 wallets.toml
 mintbot.jsonl
+mintbot.run.log
 /abi/
 
 # --- app runtime data (regenerated; use the sidebar backup to keep a copy) ---

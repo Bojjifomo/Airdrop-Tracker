@@ -181,31 +181,37 @@ def rank_phase_getters(abi: list[dict[str, Any]]) -> list[Candidate]:
     return sorted(candidates, key=lambda c: (-c.score, c.name))
 
 
+def template_args_for(entry: dict[str, Any]) -> tuple[str, ...]:
+    """Map a mint signature onto the bot's per-wallet placeholders."""
+    placeholders = {"uint256": "{quantity}", "address": "{address}", "bytes32[]": "{proof}"}
+    return tuple(
+        placeholders.get(i["type"], f"<{i['type']} {i.get('name') or 'arg'}>")
+        for i in entry.get("inputs", [])
+    )
+
+
+def expected_open_value(entry: dict[str, Any]) -> Any:
+    """The value a phase getter takes when the mint is open."""
+    if entry["outputs"][0]["type"] != "bool":
+        return 1
+    return "paused" not in entry["name"].lower()
+
+
 def suggest_config(address: str, mint: Candidate | None, getter: Candidate | None) -> str:
     """Render a config snippet for the top-ranked candidates."""
     lines = ["[contract]", f'address = "{address}"', 'abi_file = "abi/mint.json"', "", "[mint]"]
     if mint is None:
         lines += ['function = "mint"  # nothing matched — check the ABI by hand', "args = []"]
     else:
-        args = []
-        for i in mint.entry.get("inputs", []):
-            if i["type"] == "uint256":
-                args.append('"{quantity}"')
-            elif i["type"] == "address":
-                args.append('"{address}"')
-            elif i["type"] == "bytes32[]":
-                args.append('"{proof}"')
-            else:
-                args.append(f'"<{i["type"]} {i.get("name") or "arg"}>"')
+        args = [f'"{a}"' for a in template_args_for(mint.entry)]
         lines += [f'function = "{mint.name}"', f"args = [{', '.join(args)}]"]
     lines += ['price = "0 eth"  # <- set the real mint price', "quantity = 1", ""]
 
     if getter is None:
         lines += ["[watch]", 'mode = "simulate"']
     else:
-        expect = "false" if "paused" in getter.name.lower() else "true"
-        if getter.entry["outputs"][0]["type"] != "bool":
-            expect = "1"
+        value = expected_open_value(getter.entry)
+        expect = str(value).lower() if isinstance(value, bool) else str(value)
         lines += [
             "[watch]",
             'mode = "both"',
