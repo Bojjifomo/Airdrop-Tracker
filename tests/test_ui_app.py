@@ -54,7 +54,7 @@ def configured(directory: Path) -> Workspace:
 def test_an_empty_workspace_renders_and_lists_what_is_missing(tmp_path):
     at = app_in(tmp_path).run()
     assert at.exception == []
-    assert len(at.tabs) == 4
+    assert len(at.tabs) == 6
     (warning,) = at.sidebar.warning
     assert "add at least one wallet" in warning.value
     assert "set the mint contract address" in warning.value
@@ -170,3 +170,80 @@ def test_preflight_runs_from_the_ui_against_a_live_node(tmp_path, monkeypatch):
     assert "mint entrypoint resolves to mint(uint256)" in body
     assert "Preflight clean." in body
     assert not at.error
+
+
+def test_the_funding_tab_can_create_wallets(tmp_path, monkeypatch):
+    from mintbot.settings import read_wallets
+
+    for var in ("SPACE_ID", "DYNO", "K_SERVICE", "RENDER", "RAILWAY_ENVIRONMENT",
+                "CODESPACE_NAME", "STREAMLIT_SHARING_MODE"):
+        monkeypatch.delenv(var, raising=False)
+
+    at = app_in(tmp_path).run()
+    at.number_input(key="gen_count").set_value(3)
+    at.text_input(key="gen_pw").set_value(PASSWORD)
+    submit(at, "Create").click().run()
+
+    assert at.exception == []
+    entries = read_wallets(tmp_path / "wallets.toml")
+    assert [e.label for e in entries] == ["wallet1", "wallet2", "wallet3"]
+    assert len({e.address for e in entries}) == 3
+
+
+def test_wallet_creation_is_blocked_on_hosted_infrastructure(tmp_path, monkeypatch):
+    from mintbot.settings import read_wallets
+
+    monkeypatch.delenv("MINTBOT_ALLOW_KEYS", raising=False)
+    monkeypatch.setenv("SPACE_ID", "someone-elses-machine")
+
+    at = app_in(tmp_path).run()
+    at.number_input(key="gen_count").set_value(3)
+    at.text_input(key="gen_pw").set_value(PASSWORD)
+    submit(at, "Create").click().run()
+
+    assert any("key creation is disabled" in e.value for e in at.error)
+    assert read_wallets(tmp_path / "wallets.toml") == []
+
+
+def test_the_drop_tab_warns_that_extra_transactions_cost_gas(tmp_path):
+    configured(tmp_path)
+    at = app_in(tmp_path).run()
+
+    # The salvo control lives on the drop tab; raising it above one warns.
+    salvo = next(n for n in at.number_input if n.label == "Transactions per wallet")
+    salvo.set_value(3).run()
+
+    assert at.exception == []
+    assert any("will revert and cost gas" in w.value for w in at.warning)
+
+
+def test_the_eligibility_tab_reports_a_verdict_per_wallet(tmp_path, monkeypatch):
+    from tests.test_integration import CHAIN_ID, StubState, make_handler
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    for var in ("SPACE_ID", "DYNO", "K_SERVICE", "RENDER", "RAILWAY_ENVIRONMENT",
+                "CODESPACE_NAME", "STREAMLIT_SHARING_MODE"):
+        monkeypatch.delenv(var, raising=False)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(StubState()))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address
+    try:
+        workspace = configured(tmp_path)
+        write_config(
+            workspace.config,
+            ConfigDraft(contract_address=CONTRACT, rpc_url=f"http://{host}:{port}",
+                        chain_id=CHAIN_ID),
+        )
+        at = app_in(tmp_path).run()
+        at.text_input(key="eligibility_pw").set_value(PASSWORD)
+        next(b for b in at.button if b.label == "Check eligibility").click().run()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert at.exception == []
+    body = " ".join(c.value for c in at.caption) + " ".join(w.value for w in at.warning)
+    assert "exposes no allowlist flag" in body
+    assert "1 wallet(s) look ineligible" in body

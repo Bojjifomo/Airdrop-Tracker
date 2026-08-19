@@ -220,17 +220,29 @@ class ChainClient:
     def estimate_gas(self, tx: dict[str, Any]) -> int:
         return self.run(lambda w3: w3.eth.estimate_gas(tx))
 
-    def contract(self, address: str):
-        return self.w3.eth.contract(address=Web3.to_checksum_address(address), abi=self.abi)
+    def contract(self, address: str, abi: list[dict[str, Any]] | None = None):
+        return self.w3.eth.contract(
+            address=Web3.to_checksum_address(address), abi=abi if abi is not None else self.abi
+        )
 
-    def encode_call(self, address: str, name: str, args: list[Any]) -> str:
-        """ABI-encode a function call into calldata."""
-        entry = resolve_overload(self.abi, name, args)
-        fn = self.contract(address).get_function_by_signature(signature_of(entry))
+    def encode_call(
+        self, address: str, name: str, args: list[Any], abi: list[dict[str, Any]] | None = None
+    ) -> str:
+        """ABI-encode a function call into calldata.
+
+        `abi` overrides the client's own — useful for standard interfaces like
+        ERC20 that have nothing to do with the mint contract.
+        """
+        target = abi if abi is not None else self.abi
+        entry = resolve_overload(target, name, args)
+        fn = self.contract(address, target).get_function_by_signature(signature_of(entry))
         return fn(*args)._encode_transaction_data()
 
-    def decode_result(self, name: str, args: list[Any], data: bytes) -> Any:
-        entry = resolve_overload(self.abi, name, args)
+    def decode_result(
+        self, name: str, args: list[Any], data: bytes,
+        abi: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        entry = resolve_overload(abi if abi is not None else self.abi, name, args)
         decoded = self.w3.codec.decode(
             [o["type"] for o in entry.get("outputs", [])], bytes(data)
         )
@@ -240,6 +252,25 @@ class ChainClient:
     def send_raw(self, raw: bytes) -> str:
         # hexbytes drops the 0x prefix from .hex(); to_hex keeps hashes canonical.
         return self.run(lambda w3: Web3.to_hex(w3.eth.send_raw_transaction(raw)))
+
+    def broadcast_all(self, raw: bytes) -> tuple[str | None, list[str]]:
+        """Push the same signed bytes to every endpoint at once.
+
+        Propagation, not duplication: the transaction has one hash, so extra
+        copies are dropped by any node that already has it. Returns the hash
+        from the first endpoint that took it, plus a note per failure.
+        """
+        tx_hash: str | None = None
+        failures: list[str] = []
+        for url in self._urls:
+            try:
+                accepted = Web3.to_hex(self._client_for(url).eth.send_raw_transaction(raw))
+                tx_hash = tx_hash or accepted
+            except Exception as exc:  # noqa: BLE001 - one endpoint refusing is not fatal
+                failures.append(f"{url}: {str(exc)[:120]}")
+        if tx_hash is None:
+            raise ChainError("no endpoint accepted the transaction — " + " | ".join(failures))
+        return tx_hash, failures
 
     def wait_for_receipt(self, tx_hash: str, timeout: float = 120.0) -> dict[str, Any]:
         return self.run(

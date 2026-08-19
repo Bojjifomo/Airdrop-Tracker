@@ -25,17 +25,26 @@ from mintbot.discovery import (                                       # noqa: E4
     DiscoveryError, expected_open_value, fetch_abi, rank_mint_functions,
     rank_phase_getters, save_abi, template_args_for,
 )
+from mintbot.eligibility import EligibilityChecker                    # noqa: E402
+from mintbot.nft import NftManager                                    # noqa: E402
+from mintbot.runner import MintRunner, Reporter                       # noqa: E402
 from mintbot.settings import (                                        # noqa: E402
     ConfigDraft, read_draft, read_wallets, write_config,
 )
+from mintbot.wallet_manager import TransferError, WalletManager       # noqa: E402
 from mintbot.ui_state import (                                        # noqa: E402
-    Workspace, add_wallet_from_env, add_wallet_from_key, check_keystore_password,
+    Workspace, add_generated_wallets, add_wallet_from_env, add_wallet_from_key,
+    check_keystore_password,
     coerce_expect, hosted_environment, keystore_password, parse_proof, read_events, readiness,
     remove_wallet, reset_events, start_run, tail, update_wallet,
 )
 from mintbot.wallets import WalletError, load_wallets                 # noqa: E402
 
 WS = Workspace(ROOT)
+FIRE_HELP = {
+    "probe": "Wait until the contract actually accepts the call, then fire. Safest.",
+    "instant": "Fire at a set time without checking. For drops with no readable signal.",
+}
 WATCH_HELP = {
     "simulate": "Poll the real mint call and fire when it stops reverting. Works on any contract.",
     "getter": "Watch a phase flag on the contract and fire when it flips.",
@@ -70,6 +79,23 @@ def save_draft(new: ConfigDraft) -> bool:
         return False
     st.session_state.draft = new
     return True
+
+
+def unlock(password: str):
+    """Load every armed wallet with its key, for an operation that signs."""
+    config = load_config(WS.config)
+    with keystore_password(password):
+        wallets = load_wallets(
+            WS.wallets, config.mint.quantity, config.mint.max_per_wallet, allow_prompt=False
+        )
+    return config, wallets
+
+
+def password_box(key: str, entries) -> str:
+    """Ask for the keystore password, but only when a keystore is actually used."""
+    if not any(e.keystore for e in entries if e.enabled):
+        return ""
+    return st.text_input("Keystore password", type="password", key=key)
 
 
 def running() -> bool:
@@ -348,6 +374,55 @@ def render_drop_tab() -> None:
         start_at = datetime.combine(day, clock).replace(tzinfo=timezone.utc).isoformat()
         st.caption(f"the bot idles until `{start_at}`")
 
+    st.subheader("How it fires")
+    fire_modes = list(FIRE_HELP)
+    fire_mode = st.radio(
+        "Firing strategy",
+        fire_modes,
+        index=fire_modes.index(current.fire_mode),
+        format_func=lambda m: f"{m} — {FIRE_HELP[m]}",
+    )
+    fire_at = current.fire_at
+    if fire_mode == "instant":
+        cols = st.columns(2)
+        day = cols[0].date_input("Fire date (UTC)", key="fire_date")
+        clock = cols[1].time_input("Fire time (UTC)", key="fire_time")
+        fire_at = datetime.combine(day, clock).replace(tzinfo=timezone.utc).isoformat()
+        st.caption(f"fires at `{fire_at}` without checking the contract first")
+
+    cols = st.columns(3)
+    transactions = cols[0].number_input(
+        "Transactions per wallet", 1, 10, current.fire_transactions,
+        help="More than one means the extras revert once the wallet's allowance is "
+        "used up — you pay their gas either way.",
+    )
+    interval = cols[1].number_input(
+        "Gap between them (ms)", 0, 5_000, current.fire_interval_ms, step=10
+    )
+    rebroadcast = cols[2].checkbox(
+        "Push to every endpoint", current.fire_rebroadcast,
+        help="Sends the same signed bytes to all your RPCs at once for faster propagation. "
+        "One transaction, one hash — not a duplicate mint.",
+    )
+    if transactions > 1:
+        st.warning(
+            f"{transactions} transactions per wallet: if the drop allows only one per wallet, "
+            f"{transactions - 1} will revert and cost gas."
+        )
+
+    st.subheader("After the mint")
+    postmint = st.checkbox(
+        "Move minted tokens out automatically", current.postmint_enabled,
+        help="The minting wallet holds a hot key. Sweeping to a vault the moment a token "
+        "lands shrinks the window where a leaked key costs you the mint.",
+    )
+    destination = current.postmint_destination
+    if postmint:
+        destination = st.text_input(
+            "Vault address", current.postmint_destination, placeholder="0x…",
+            help="A wallet whose key the bot does not hold.",
+        )
+
     st.subheader("Safety")
     cols = st.columns(3)
     max_spend = cols[0].number_input(
@@ -383,6 +458,13 @@ def render_drop_tab() -> None:
             max_fee_gwei=float(max_fee),
             priority_fee_gwei=float(priority_fee),
             gas_limit=int(gas_limit),
+            fire_mode=fire_mode,
+            fire_at=fire_at if fire_mode == "instant" else "",
+            fire_transactions=int(transactions),
+            fire_interval_ms=int(interval),
+            fire_rebroadcast=rebroadcast,
+            postmint_enabled=postmint,
+            postmint_destination=destination.strip(),
             watch_mode=mode,
             poll_interval_ms=int(poll),
             getter_function=getter_function,
@@ -396,6 +478,169 @@ def render_drop_tab() -> None:
         if save_draft(updated):
             st.success(f"Saved to {WS.config.relative_to(ROOT)}")
             st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# funding
+# --------------------------------------------------------------------------- #
+def _funds(password: str, live: bool):
+    config, wallets = unlock(password)
+    manager = WalletManager(
+        ChainClient(config.chain, load_abi(WS.abi if WS.abi.exists() else None)),
+        config.gas, Reporter(WS.events), dry_run=not live,
+    )
+    return manager, wallets
+
+
+def _show_batch(batch) -> None:
+    for transfer in batch.transfers:
+        line = f"`{transfer.label}` — {transfer.status}"
+        if transfer.amount_wei:
+            line += f", {transfer.amount_eth:.6f} ETH"
+        if transfer.tx_hash:
+            line += f" — `{transfer.tx_hash}`"
+        elif transfer.detail:
+            line += f" ({transfer.detail})"
+        if transfer.status == "confirmed":
+            st.success(line)
+        elif transfer.status in ("failed", "reverted"):
+            st.error(line)
+        else:
+            st.write(line)
+    st.caption(batch.summary())
+
+
+def render_funding_tab() -> None:
+    entries = read_wallets(WS.wallets)
+
+    st.subheader("Create wallets")
+    st.caption(
+        "Fresh keys, encrypted on the way to disk. Back up the keys/ directory before "
+        "funding anything — those files are the only copy."
+    )
+    with st.form("generate_wallets"):
+        cols = st.columns(4)
+        count = cols[0].number_input("How many", 1, 200, 5, key="gen_count")
+        prefix = cols[1].text_input("Label prefix", "wallet", key="gen_prefix")
+        quantity = cols[2].number_input("Mint quantity each", 1, 100, draft().quantity, key="gen_qty")
+        password = cols[3].text_input("Keystore password", type="password", key="gen_pw")
+        if st.form_submit_button("Create", type="primary"):
+            if HOSTED:
+                st.error(f"Running on {HOSTED} — key creation is disabled here.")
+            else:
+                try:
+                    made = add_generated_wallets(WS, int(count), password, int(quantity), prefix)
+                    st.success(f"Created {len(made)} wallet(s)")
+                    st.rerun()
+                except (WalletError, ValueError) as exc:
+                    st.error(str(exc))
+
+    if not entries:
+        return
+
+    st.divider()
+    st.subheader("Fund them")
+    st.caption("Send the same amount from one wallet to every other wallet in the list.")
+    cols = st.columns(3)
+    funder_label = cols[0].selectbox("From", [e.label for e in entries], key="disperse_from")
+    amount = cols[1].number_input(
+        "ETH each", 0.0, 1000.0, 0.01, step=0.001, format="%.6f", key="disperse_amount"
+    )
+    live_disperse = cols[2].checkbox("Broadcast for real", key="disperse_live")
+    disperse_pw = password_box("disperse_pw", entries)
+
+    if st.button("Disperse", key="disperse_go"):
+        try:
+            manager, wallets = _funds(disperse_pw, live_disperse)
+            funder = next(w for w in wallets if w.label == funder_label)
+            recipients = [w.address for w in wallets if w.label != funder_label]
+            with st.spinner("Sending…"):
+                _show_batch(manager.disperse(funder, recipients, int(amount * 1e18)))
+        except (TransferError, WalletError, ChainError, ConfigError, StopIteration) as exc:
+            st.error(str(exc) or "the selected funder is not an armed wallet")
+
+    st.divider()
+    st.subheader("Sweep them")
+    st.caption("Empty every wallet into one address. Gas comes out of the amount sent.")
+    cols = st.columns(3)
+    destination = cols[0].text_input("To address", placeholder="0x…", key="sweep_to")
+    leave = cols[1].number_input(
+        "Leave behind (ETH)", 0.0, 10.0, 0.0, step=0.001, format="%.6f", key="sweep_leave"
+    )
+    live_sweep = cols[2].checkbox("Broadcast for real", key="sweep_live")
+    sweep_pw = password_box("sweep_pw", entries)
+
+    if st.button("Sweep", key="sweep_go"):
+        if not destination.strip().startswith("0x"):
+            st.error("Enter a destination address first.")
+        else:
+            try:
+                manager, wallets = _funds(sweep_pw, live_sweep)
+                with st.spinner("Sweeping…"):
+                    _show_batch(
+                        manager.consolidate(wallets, destination.strip(), int(leave * 1e18))
+                    )
+            except (TransferError, WalletError, ChainError, ConfigError) as exc:
+                st.error(str(exc))
+
+
+# --------------------------------------------------------------------------- #
+# eligibility
+# --------------------------------------------------------------------------- #
+def render_eligibility_tab() -> None:
+    state = readiness(WS, draft())
+    if not state.ready:
+        st.warning("Finish setup first: " + ", ".join(state.missing))
+        return
+
+    st.caption(
+        "Asks the contract, before the drop, whether each wallet can actually mint — the "
+        "allowlist flag, how much it has already taken, and a live simulation."
+    )
+    entries = read_wallets(WS.wallets)
+    password = password_box("eligibility_pw", entries)
+
+    if not st.button("Check eligibility", type="primary"):
+        return
+
+    try:
+        with st.spinner("Asking the contract…"):
+            config, wallets = unlock(password)
+            client = ChainClient(config.chain, load_abi(WS.abi))
+            runner = MintRunner(config, wallets, client, Reporter(None))
+            verdicts = EligibilityChecker(client, config.contract.address, runner).check(wallets)
+    except (ConfigError, WalletError, ChainError) as exc:
+        st.error(str(exc))
+        return
+
+    for verdict in verdicts:
+        with st.container(border=True):
+            cols = st.columns([2, 4, 3])
+            cols[0].markdown(f"**{verdict.label}**")
+            cols[1].markdown(f"<span class='mono'>{verdict.address}</span>", unsafe_allow_html=True)
+            if verdict.simulation_ok:
+                cols[2].success(verdict.verdict)
+            elif verdict.ok:
+                cols[2].info(verdict.verdict)
+            else:
+                cols[2].warning(verdict.verdict)
+
+            if verdict.allowlist_source:
+                st.caption(f"read from `{verdict.allowlist_source}`")
+            if verdict.already_minted is not None:
+                st.caption(f"already minted: {verdict.already_minted}")
+            if verdict.proof_matches:
+                st.caption(f"merkle proof verifies as `{verdict.proof_matches}`")
+            if verdict.simulation_detail and not verdict.simulation_ok:
+                st.caption(f"simulation: {verdict.simulation_detail}")
+            for note in verdict.notes:
+                st.caption(f"note: {note}")
+
+    blocked = [v for v in verdicts if not v.ok]
+    if blocked:
+        st.warning(
+            f"{len(blocked)} wallet(s) look ineligible: {', '.join(v.label for v in blocked)}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -535,13 +780,17 @@ st.caption(
     "the moment the phase actually opens."
 )
 
-wallets_tab, drop_tab, preflight_tab, run_tab = st.tabs(
-    ["1 · Wallets", "2 · The drop", "3 · Preflight", "4 · Run"]
+wallets_tab, funding_tab, drop_tab, eligibility_tab, preflight_tab, run_tab = st.tabs(
+    ["1 · Wallets", "2 · Funding", "3 · The drop", "4 · Eligibility", "5 · Preflight", "6 · Run"]
 )
 with wallets_tab:
     render_wallets_tab()
+with funding_tab:
+    render_funding_tab()
 with drop_tab:
     render_drop_tab()
+with eligibility_tab:
+    render_eligibility_tab()
 with preflight_tab:
     render_preflight_tab()
 with run_tab:

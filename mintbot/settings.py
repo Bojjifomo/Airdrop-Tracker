@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import WATCH_MODES, ConfigError
+from .config import FIRE_MODES, MAX_SALVO, WATCH_MODES, ConfigError
 from .wallets import WalletError
 
 SHARED_PASSWORD_ENV = "MINTBOT_PASSWORD"
@@ -145,6 +145,15 @@ class ConfigDraft:
     priority_fee_gwei: float = 0.01
     gas_limit: int = 250_000
 
+    fire_mode: str = "probe"
+    fire_at: str = ""
+    fire_transactions: int = 1
+    fire_interval_ms: int = 120
+    fire_rebroadcast: bool = False
+
+    postmint_enabled: bool = False
+    postmint_destination: str = ""
+
     watch_mode: str = "simulate"
     poll_interval_ms: int = 400
     getter_function: str = ""
@@ -169,6 +178,18 @@ class ConfigDraft:
             raise ConfigError(f"watch mode must be one of {', '.join(WATCH_MODES)}")
         if self.watch_mode in ("getter", "both") and not self.getter_function:
             raise ConfigError(f"watch mode '{self.watch_mode}' needs a phase getter function")
+        if self.fire_mode not in FIRE_MODES:
+            raise ConfigError(f"fire mode must be one of {', '.join(FIRE_MODES)}")
+        if self.fire_mode == "instant" and not (self.fire_at or self.start_at):
+            raise ConfigError("instant firing needs a time to fire at")
+        if not 1 <= self.fire_transactions <= MAX_SALVO:
+            raise ConfigError(f"transactions per wallet must be between 1 and {MAX_SALVO}")
+        if self.postmint_enabled:
+            target = self.postmint_destination.strip()
+            if not target.startswith("0x") or len(target) != 42:
+                raise ConfigError(
+                    "post-mint transfers need a destination address to send tokens to"
+                )
         if self.quantity > self.max_per_wallet:
             raise ConfigError("quantity cannot exceed max per wallet")
         if self.max_fee_gwei <= 0:
@@ -223,6 +244,28 @@ def render_config_toml(draft: ConfigDraft) -> str:
     if draft.start_at:
         lines.append(f"start_at = {_toml_str(draft.start_at)}")
 
+    lines += [
+        "",
+        "[fire]",
+        "# probe waits for the contract to accept the call; instant goes on time.",
+        f"mode = {_toml_str(draft.fire_mode)}",
+    ]
+    if draft.fire_at:
+        lines.append(f"at = {_toml_str(draft.fire_at)}")
+    lines += [
+        "# More than one transaction per wallet means the extras revert once the",
+        "# wallet's allowance is used up — you pay their gas either way.",
+        f"transactions = {draft.fire_transactions}",
+        f"interval_ms = {draft.fire_interval_ms}",
+        f"rebroadcast = {'true' if draft.fire_rebroadcast else 'false'}",
+        "",
+        "[postmint]",
+        "# Move tokens to a wallet whose key the bot does not hold, the moment they land.",
+        f"enabled = {'true' if draft.postmint_enabled else 'false'}",
+    ]
+    if draft.postmint_destination:
+        lines.append(f"destination = {_toml_str(draft.postmint_destination.strip())}")
+
     lines += ["", "[watch.getter]"]
     if draft.getter_function:
         lines.append(f"function = {_toml_str(draft.getter_function)}")
@@ -264,6 +307,8 @@ def read_draft(path: str | Path) -> ConfigDraft:
     gas = raw.get("gas", {})
     watch = raw.get("watch", {})
     getter = watch.get("getter", {})
+    fire = raw.get("fire", {})
+    postmint = raw.get("postmint", {})
     safety = raw.get("safety", {})
     default = ConfigDraft()
 
@@ -282,6 +327,13 @@ def read_draft(path: str | Path) -> ConfigDraft:
         max_fee_gwei=float(gas.get("max_fee_gwei", default.max_fee_gwei)),
         priority_fee_gwei=float(gas.get("priority_fee_gwei", default.priority_fee_gwei)),
         gas_limit=int(gas.get("gas_limit", default.gas_limit) or default.gas_limit),
+        fire_mode=fire.get("mode", default.fire_mode),
+        fire_at=str(fire.get("at", "") or ""),
+        fire_transactions=int(fire.get("transactions", default.fire_transactions)),
+        fire_interval_ms=int(fire.get("interval_ms", default.fire_interval_ms)),
+        fire_rebroadcast=bool(fire.get("rebroadcast", default.fire_rebroadcast)),
+        postmint_enabled=bool(postmint.get("enabled", default.postmint_enabled)),
+        postmint_destination=str(postmint.get("destination", "") or ""),
         watch_mode=watch.get("mode", default.watch_mode),
         poll_interval_ms=int(watch.get("poll_interval_ms", default.poll_interval_ms)),
         getter_function=getter.get("function", "") or "",

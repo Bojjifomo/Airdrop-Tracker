@@ -16,7 +16,7 @@ pip install -r requirements.txt -r requirements-mintbot.txt
 streamlit run mintbot_ui.py
 ```
 
-Four tabs, in order:
+Six tabs, in order:
 
 1. **Wallets** — paste a private key and it is encrypted into a keystore under
    `keys/` before anything touches disk; the plaintext is never written, never
@@ -24,12 +24,16 @@ Four tabs, in order:
    you add, and you are asked for it once when the bot starts. You can also point
    an entry at an environment variable instead. Per-wallet quantity, merkle proof
    and an armed/disarmed toggle live here.
-2. **The drop** — paste the contract address, hit *Analyse*, and it pulls the
+2. **Funding** — create wallets in bulk, send the same amount to every one of
+   them from a funder, and sweep them all back into a single address afterwards.
+3. **The drop** — paste the contract address, hit *Analyse*, and it pulls the
    verified ABI and offers the ranked mint entrypoints and phase flags as
-   choices. Set price, quantity, gas ceiling, poll interval and the spend cap,
+   choices. Set price, quantity, gas ceiling, firing strategy and the spend cap,
    then save. This writes the same `mintbot.toml` the CLI reads.
-3. **Preflight** — the full check, broadcasting nothing.
-4. **Run** — dry run or live (live needs you to type `MINT`), then a live event
+4. **Eligibility** — ask the contract, before the drop, whether each wallet can
+   actually mint.
+5. **Preflight** — the full check, broadcasting nothing.
+6. **Run** — dry run or live (live needs you to type `MINT`), then a live event
    feed while it watches and fires.
 
 It handles private keys, so run it **on your own machine**. If it detects hosted
@@ -49,11 +53,16 @@ pip install -r requirements-mintbot.txt
 cp mintbot.example.toml mintbot.toml
 cp wallets.example.toml wallets.toml
 
-python -m mintbot discover     # fetch the ABI, rank the mint / phase functions
-python -m mintbot wallets      # confirm the addresses and balances it loaded
-python -m mintbot preflight    # check funds, gas, ABI and liveness — sends nothing
-python -m mintbot run          # dry run: signs everything, broadcasts nothing
-python -m mintbot run --live   # arm for real
+python -m mintbot generate -n 5        # create wallets as encrypted keystores
+python -m mintbot discover            # fetch the ABI, rank mint / phase functions
+python -m mintbot wallets             # addresses and balances
+python -m mintbot disperse --from main --amount 0.01 --live    # fund them
+python -m mintbot eligibility         # can each wallet actually mint?
+python -m mintbot preflight           # funds, gas, ABI, liveness — sends nothing
+python -m mintbot run                 # dry run: signs everything, broadcasts nothing
+python -m mintbot run --live          # arm for real
+python -m mintbot nft --to 0xVault --live      # move what you minted
+python -m mintbot consolidate --to 0xVault --live   # sweep the leftover gas back
 ```
 
 Both read and write the same two files, so you can set up in the panel and run
@@ -78,6 +87,47 @@ covered without the bot knowing anything about how the contract implements them.
 candidates for both, plus a config snippet you can paste in. Team-only
 entrypoints (`ownerMint`, `devMint`, `reserve…`) are scored down so the public
 one surfaces first.
+
+## Firing strategy
+
+`fire.mode = "probe"` is the default and the reliable one: wait until the
+contract accepts the call, then send. `"instant"` skips the check entirely and
+fires at `fire.at` — for a drop whose contract exposes no readable signal, where
+a probe would never turn green in time.
+
+`fire.transactions` sends that many back-to-back from each wallet on sequential
+nonces. If the drop allows one mint per wallet, the extras revert and you pay
+their gas; it buys you a second and third shot when a single transaction might
+be dropped from a full block. It is capped at 10, and off by default.
+
+`fire.rebroadcast` pushes the same signed bytes to every configured endpoint at
+once. One transaction, one hash — this is propagation, not a duplicate mint.
+
+## After the mint
+
+`[postmint]` moves tokens to a vault the instant they land. The bot reads the
+token ids straight out of the mint receipt's `Transfer` logs, so it moves exactly
+what was minted, and a failed sweep is reported without ever undoing the mint.
+The minting wallet holds a hot key; the vault should not.
+
+## Funding a set of wallets
+
+`disperse` sends the same amount from one wallet to every other, on sequential
+nonces, refusing upfront if the funder cannot cover the total including gas.
+`consolidate` sweeps the other way, taking gas out of the amount sent so a wallet
+empties rather than failing for one wei, and skipping any wallet too poor to
+cover the transfer instead of erroring. Both broadcast the whole batch first and
+collect receipts after, so one slow confirmation does not hold up the rest.
+
+## Eligibility
+
+`eligibility` asks the contract three separate questions per wallet, before the
+drop: the allowlist flag (it finds the right view function itself), how much the
+address has already minted, and whether a live simulation of the mint succeeds.
+If the contract uses a merkle allowlist it also verifies your configured proof
+against the on-chain root, and reports *which* leaf encoding matched —
+`keccak(address)` or `keccak(keccak(address))` — since projects differ and a
+proof only verifies against the one they used.
 
 ## Latency
 
@@ -178,6 +228,17 @@ anything. If a drop is per-wallet limited or allowlist gated, the bot mints
 exactly what the contract lets each of your wallets mint. Some projects treat
 multi-wallet minting as a rules violation and revoke; that is between you and
 the project, so read their terms before pointing many wallets at one drop.
+
+Not built, and not planned here: bulk social-account automation — driving many
+X, Discord or Gmail accounts to farm allowlist spots. That is sybil behaviour
+against those platforms rather than a chain interaction, and it is the one part
+of a general-purpose minting toolkit this repo leaves out. The eligibility
+checker covers the legitimate half of the same problem: knowing which of your
+wallets actually qualified.
+
+Not built yet, but a reasonable next step: Solana drops (a different stack
+entirely — Candy Machine, Jito bundles), per-launchpad site modules, and OpenSea
+listing via Seaport.
 
 ## Tests
 

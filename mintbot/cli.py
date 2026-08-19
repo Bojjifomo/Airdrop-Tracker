@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -15,7 +16,11 @@ from . import __version__
 from .chain import ChainClient, ChainError, GasTooHigh, load_abi, resolve_overload, signature_of
 from .config import Config, ConfigError, load_config, resolve_args
 from .discovery import DiscoveryError, fetch_abi, rank_mint_functions, rank_phase_getters, save_abi, suggest_config
-from .runner import MintRunner, Reporter, WalletPlan
+from .eligibility import EligibilityChecker
+from .keystore import generate_keystores
+from .nft import NftManager
+from .runner import MintRunner, Reporter
+from .wallet_manager import TransferError, WalletManager
 from .wallets import WalletError, load_wallets
 
 log = logging.getLogger("mintbot")
@@ -240,6 +245,128 @@ def _preflight(config: Config, client: ChainClient, wallets) -> tuple[list[str],
     return problems, notes
 
 
+def _wallets_for(config: Config, args: argparse.Namespace):
+    return load_wallets(
+        _resolve_wallets_path(config, args.wallets),
+        default_quantity=config.mint.quantity,
+        max_per_wallet=config.mint.max_per_wallet,
+    )
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    import getpass
+
+    password = os.environ.get("MINTBOT_PASSWORD") or getpass.getpass(
+        "Password to encrypt the new keystores: "
+    )
+    if not password:
+        print("a password is required", file=sys.stderr)
+        return 2
+
+    created = generate_keystores(args.count, password, keys_dir=args.keys_dir, prefix=args.prefix)
+    print(f"{len(created)} wallet(s) created in {args.keys_dir}\n")
+    for key in created:
+        print(f"{key.label:<14} {key.address}")
+    print(
+        "\nAdd them to wallets.toml (or the control panel) before funding. "
+        "Back up that directory — the keystores are the only copy of these keys."
+    )
+    return 0
+
+
+def cmd_eligibility(args: argparse.Namespace) -> int:
+    config, client = _load(args)
+    wallets = _wallets_for(config, args)
+    runner = MintRunner(config, wallets, client, Reporter(None))
+    checker = EligibilityChecker(client, config.contract.address, runner)
+
+    print(f"Checking {len(wallets)} wallet(s) against {config.contract.address}\n")
+    verdicts = checker.check(wallets)
+    print(f"{'label':<14} {'address':<44} {'minted':>7}  verdict")
+    for verdict in verdicts:
+        minted = "-" if verdict.already_minted is None else str(verdict.already_minted)
+        print(f"{verdict.label:<14} {verdict.address:<44} {minted:>7}  {verdict.verdict}")
+        for note in verdict.notes:
+            print(f"{'':<14} note: {note}")
+        if verdict.proof_matches:
+            print(f"{'':<14} proof verifies as {verdict.proof_matches}")
+
+    blocked = [v for v in verdicts if not v.ok]
+    if blocked:
+        print(f"\n{len(blocked)} wallet(s) look ineligible: {', '.join(v.label for v in blocked)}")
+    return 0
+
+
+def cmd_disperse(args: argparse.Namespace) -> int:
+    config, client = _load(args)
+    wallets = _wallets_for(config, args)
+    funder = next((w for w in wallets if w.label == args.source), None)
+    if funder is None:
+        print(f"no wallet labelled '{args.source}' in your wallets file", file=sys.stderr)
+        return 2
+
+    recipients = [w.address for w in wallets if w.label != args.source]
+    if not recipients:
+        print("nothing to fund — the wallets file has only the funder", file=sys.stderr)
+        return 2
+
+    amount = int(args.amount * 1e18)
+    manager = WalletManager(client, config.gas, Reporter(config.log_file), config.safety.dry_run)
+    try:
+        batch = manager.disperse(funder, recipients, amount)
+    except TransferError as exc:
+        log.error("%s", exc)
+        return 1
+
+    for transfer in batch.transfers:
+        print(f"{transfer.label:<28} {transfer.status:<10} {transfer.tx_hash or transfer.detail}")
+    print(f"\n{batch.summary()}")
+    return 1 if batch.failed else 0
+
+
+def cmd_consolidate(args: argparse.Namespace) -> int:
+    config, client = _load(args)
+    wallets = _wallets_for(config, args)
+    manager = WalletManager(client, config.gas, Reporter(config.log_file), config.safety.dry_run)
+
+    batch = manager.consolidate(wallets, args.to, leave_wei=int(args.leave * 1e18))
+    for transfer in batch.transfers:
+        print(
+            f"{transfer.label:<14} {transfer.status:<10} {transfer.amount_eth:>12.6f}  "
+            f"{transfer.tx_hash or transfer.detail}"
+        )
+    print(f"\n{batch.summary()}")
+    return 1 if batch.failed else 0
+
+
+def cmd_nft(args: argparse.Namespace) -> int:
+    config, client = _load(args)
+    wallets = _wallets_for(config, args)
+    manager = NftManager(client, config.gas, Reporter(config.log_file), config.safety.dry_run)
+    collection = args.contract or config.contract.address
+
+    holdings = manager.balances(collection, [w.address for w in wallets])
+    print(f"{manager.collection_name(collection)} — {collection}\n")
+    print(f"{'label':<14} {'address':<44} {'held':>5}")
+    for wallet in wallets:
+        print(f"{wallet.label:<14} {wallet.address:<44} {holdings[wallet.address]:>5}")
+
+    if not args.to:
+        return 0
+
+    moved = 0
+    for wallet in wallets:
+        ids = manager.owned_ids(collection, wallet.address)
+        if not ids:
+            continue
+        batch = manager.transfer(wallet, collection, args.to, ids)
+        moved += len(batch.confirmed)
+        for transfer in batch.transfers:
+            print(f"{transfer.label:<20} {transfer.status:<10} {transfer.tx_hash or transfer.detail}")
+    print(f"\n{moved} token(s) moved to {args.to}")
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     config, client = _load(args)
     wallets = load_wallets(
@@ -312,6 +439,37 @@ def build_parser() -> argparse.ArgumentParser:
     preflight = sub.add_parser("preflight", help="check everything without sending anything")
     preflight.set_defaults(func=cmd_preflight)
 
+    generate = sub.add_parser("generate", help="create new wallets as encrypted keystores")
+    generate.add_argument("-n", "--count", type=int, default=1, help="how many to create")
+    generate.add_argument("--prefix", default="wallet", help="label prefix (default: wallet)")
+    generate.add_argument("--keys-dir", default="keys", help="where to write the keystores")
+    generate.set_defaults(func=cmd_generate)
+
+    eligibility = sub.add_parser(
+        "eligibility", help="check every wallet against the drop's allowlist"
+    )
+    eligibility.set_defaults(func=cmd_eligibility)
+
+    disperse = sub.add_parser("disperse", help="fund every wallet from one of them")
+    disperse.add_argument("--from", dest="source", required=True, help="label of the funding wallet")
+    disperse.add_argument("--amount", type=float, required=True, help="ETH to send to each wallet")
+    disperse.add_argument("--live", action="store_true", help="actually broadcast")
+    disperse.set_defaults(func=cmd_disperse)
+
+    consolidate = sub.add_parser("consolidate", help="sweep every wallet into one address")
+    consolidate.add_argument("--to", required=True, help="destination address")
+    consolidate.add_argument(
+        "--leave", type=float, default=0.0, help="ETH to leave behind in each wallet"
+    )
+    consolidate.add_argument("--live", action="store_true", help="actually broadcast")
+    consolidate.set_defaults(func=cmd_consolidate)
+
+    nft = sub.add_parser("nft", help="list NFT holdings, and optionally move them")
+    nft.add_argument("--contract", help="collection address (defaults to the mint contract)")
+    nft.add_argument("--to", help="move every held token to this address")
+    nft.add_argument("--live", action="store_true", help="actually broadcast")
+    nft.set_defaults(func=cmd_nft)
+
     run = sub.add_parser("run", help="watch the contract and mint when the phase opens")
     run.add_argument("--live", action="store_true", help="actually broadcast (overrides dry_run)")
     run.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
@@ -326,7 +484,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _setup_logging(args.verbose)
     try:
         return args.func(args)
-    except (ConfigError, WalletError, ChainError, DiscoveryError) as exc:
+    except (ConfigError, WalletError, ChainError, DiscoveryError, TransferError) as exc:
         log.error("%s", exc)
         return 2
     except KeyboardInterrupt:

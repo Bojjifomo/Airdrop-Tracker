@@ -78,6 +78,35 @@ def create_keystore(
     return StoredKey(label=safe, address=address, path=path)
 
 
+def generate_keystores(
+    count: int,
+    password: str,
+    keys_dir: str | Path = DEFAULT_KEYS_DIR,
+    prefix: str = "wallet",
+    start: int = 1,
+) -> list[StoredKey]:
+    """Create `count` brand-new wallets, encrypted on the way to disk.
+
+    Keys come from eth-account's CSPRNG-backed generator. Nothing is returned
+    but labels and addresses; the only copy of each key is the keystore file,
+    so back that directory up before funding anything.
+    """
+    if count < 1:
+        raise WalletError("count must be at least 1")
+
+    created: list[StoredKey] = []
+    index = start
+    for _ in range(count):
+        label = f"{prefix}{index}"
+        while (Path(keys_dir).expanduser() / f"{_safe_label(label)}.json").exists():
+            index += 1
+            label = f"{prefix}{index}"
+        account = Account.create()
+        created.append(create_keystore(label, account.key.hex(), password, keys_dir=keys_dir))
+        index += 1
+    return created
+
+
 def address_of_keystore(path: str | Path) -> str:
     """Read the address out of a keystore without needing the password."""
     keyfile = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))

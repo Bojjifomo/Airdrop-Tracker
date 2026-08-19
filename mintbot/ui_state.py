@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from .keystore import DEFAULT_KEYS_DIR, StoredKey, create_keystore, delete_keystore, verify_password
+from .keystore import (
+    DEFAULT_KEYS_DIR, StoredKey, create_keystore, delete_keystore,
+    generate_keystores, verify_password,
+)
 from .settings import SHARED_PASSWORD_ENV, ConfigDraft, WalletEntry, read_wallets, write_wallets
 from .wallets import WalletError
 
@@ -139,6 +142,36 @@ def add_wallet_from_env(
     entry.validate()
     write_wallets(workspace.wallets, entries + [entry])
     return entry
+
+
+def add_generated_wallets(
+    workspace: Workspace,
+    count: int,
+    password: str,
+    quantity: int = 1,
+    prefix: str = "wallet",
+) -> list[WalletEntry]:
+    """Create fresh wallets and record them, in one step."""
+    existing = read_wallets(workspace.wallets)
+    taken = {e.label for e in existing}
+
+    created = generate_keystores(count, password, keys_dir=workspace.keys, prefix=prefix)
+    added = []
+    for stored in created:
+        if stored.label in taken:
+            delete_keystore(stored.path)
+            continue
+        entry = WalletEntry(
+            label=stored.label,
+            address=stored.address,
+            keystore=str(stored.path),
+            password_env=SHARED_PASSWORD_ENV,
+            quantity=quantity,
+        )
+        entry.validate()
+        added.append(entry)
+    write_wallets(workspace.wallets, existing + added)
+    return added
 
 
 def update_wallet(workspace: Workspace, label: str, **changes: Any) -> list[WalletEntry]:

@@ -60,6 +60,26 @@ jitter_ms = 120            # spreads wallets out so they do not poll in lockstep
 # function = "saleState"
 # expect = 1
 
+[fire]
+# probe waits until the contract accepts the call — the reliable default.
+# instant fires at a set time without checking, for drops with no readable signal.
+mode = "probe"
+# at = "2026-08-20T15:00:00Z"    # required by instant mode
+#
+# transactions > 1 sends that many back-to-back from each wallet, on sequential
+# nonces. If the drop allows one per wallet, the extras revert and cost gas.
+transactions = 1
+interval_ms = 120
+# Push the same signed bytes to every configured endpoint at once. One
+# transaction, one hash — this is propagation, not a duplicate mint.
+rebroadcast = false
+
+[postmint]
+# The minting wallet holds a hot key. Sweeping a token to a vault the moment it
+# lands shrinks the window in which a leaked key costs you the mint.
+enabled = false
+# destination = "0xYourColdWallet"
+
 [safety]
 dry_run = true             # --live on the run command overrides this
 max_total_spend_eth = 0.5  # worst-case across all wallets; 0 disables the check

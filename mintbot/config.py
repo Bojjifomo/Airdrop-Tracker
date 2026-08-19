@@ -16,6 +16,9 @@ WEI_PER_ETH = 10**18
 WEI_PER_GWEI = 10**9
 
 WATCH_MODES = ("simulate", "getter", "both")
+FIRE_MODES = ("probe", "instant")
+# A salvo larger than this is RPC abuse, not a strategy.
+MAX_SALVO = 10
 
 
 class ConfigError(ValueError):
@@ -99,6 +102,39 @@ class WatchConfig:
 
 
 @dataclass(frozen=True)
+class FireConfig:
+    """How the transaction goes out once the moment arrives."""
+
+    mode: str = "probe"                 # probe = wait for the contract; instant = go on time
+    at: datetime | None = None          # instant mode: the exact moment to fire
+    transactions: int = 1               # sequential-nonce transactions per wallet
+    interval_ms: int = 120              # gap between them
+    rebroadcast: bool = False           # push signed bytes to every endpoint at once
+
+    @property
+    def interval_s(self) -> float:
+        return self.interval_ms / 1000.0
+
+
+@dataclass(frozen=True)
+class PostMintConfig:
+    """What happens to a token the moment it lands."""
+
+    enabled: bool = False
+    destination: str = ""          # a wallet whose key the bot does not hold
+
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        target = self.destination.strip()
+        if not target.startswith("0x") or len(target) != 42:
+            raise ConfigError(
+                "[postmint].enabled is on, so [postmint].destination must be a "
+                "20-byte hex address to send minted tokens to"
+            )
+
+
+@dataclass(frozen=True)
 class SafetyConfig:
     dry_run: bool = True
     max_total_spend_eth: float = 0.0      # 0 -> derived from price * quantity
@@ -118,6 +154,8 @@ class Config:
     mint: MintConfig
     gas: GasConfig
     watch: WatchConfig
+    fire: FireConfig
+    postmint: PostMintConfig
     safety: SafetyConfig
     wallets_file: str = "wallets.toml"
     log_file: str = "mintbot.jsonl"
@@ -282,6 +320,33 @@ def parse_config(raw: dict[str, Any], source_path: Path | None = None) -> Config
     if watch.start_at and watch.deadline_at and watch.deadline_at <= watch.start_at:
         raise ConfigError("[watch].deadline_at must be after start_at")
 
+    fire_raw = raw.get("fire", {})
+    fire_mode = str(fire_raw.get("mode", "probe")).lower()
+    if fire_mode not in FIRE_MODES:
+        raise ConfigError(f"[fire].mode must be one of {', '.join(FIRE_MODES)} (got '{fire_mode}')")
+    transactions = int(fire_raw.get("transactions", 1))
+    if not 1 <= transactions <= MAX_SALVO:
+        raise ConfigError(f"[fire].transactions must be between 1 and {MAX_SALVO}")
+    fire = FireConfig(
+        mode=fire_mode,
+        at=_as_datetime(fire_raw.get("at"), "fire", "at"),
+        transactions=transactions,
+        interval_ms=int(fire_raw.get("interval_ms", 120)),
+        rebroadcast=bool(fire_raw.get("rebroadcast", False)),
+    )
+    if fire.mode == "instant" and fire.at is None and watch.start_at is None:
+        raise ConfigError(
+            "[fire].mode = 'instant' fires without checking the contract, so it needs "
+            "[fire].at (or [watch].start_at) to say when"
+        )
+
+    postmint_raw = raw.get("postmint", {})
+    postmint = PostMintConfig(
+        enabled=bool(postmint_raw.get("enabled", False)),
+        destination=str(postmint_raw.get("destination", "")).strip(),
+    )
+    postmint.validate()
+
     safety_raw = raw.get("safety", {})
     safety = SafetyConfig(
         dry_run=bool(safety_raw.get("dry_run", True)),
@@ -299,6 +364,8 @@ def parse_config(raw: dict[str, Any], source_path: Path | None = None) -> Config
         mint=mint,
         gas=gas,
         watch=watch,
+        fire=fire,
+        postmint=postmint,
         safety=safety,
         wallets_file=str(raw.get("wallets_file", "wallets.toml")),
         log_file=str(raw.get("log_file", "mintbot.jsonl")),
