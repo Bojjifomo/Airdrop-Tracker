@@ -1,0 +1,148 @@
+# mintbot
+
+An auto-mint bot for scheduled EVM NFT drops. You point it at a mint contract and
+a set of your own wallets; it holds a pre-signed transaction per wallet, watches
+the contract, and broadcasts the moment the phase actually opens.
+
+Pre-filled for **Robinhood Chain** (chain id `4663`, RPC
+`https://rpc.mainnet.chain.robinhood.com`), but nothing in it is chain-specific.
+
+```
+pip install -r requirements-mintbot.txt
+
+cp mintbot.example.toml mintbot.toml
+cp wallets.example.toml wallets.toml
+
+python -m mintbot discover     # fetch the ABI, rank the mint / phase functions
+python -m mintbot wallets      # confirm the addresses and balances it loaded
+python -m mintbot preflight    # check funds, gas, ABI and liveness — sends nothing
+python -m mintbot run          # dry run: signs everything, broadcasts nothing
+python -m mintbot run --live   # arm for real
+```
+
+## How it decides the mint is open
+
+The default `watch.mode = "simulate"` is the reliable signal. Every poll, the bot
+`eth_call`s the *real* mint function from the *real* wallet with the *real*
+value. While the phase is closed the call reverts; the instant it returns
+successfully, the mint is genuinely open **for that wallet** — which means
+allowlist gating, per-wallet caps, supply limits and price checks are all
+covered without the bot knowing anything about how the contract implements them.
+
+| mode | signal | when to use |
+| --- | --- | --- |
+| `simulate` | the mint call stops reverting | default; works on any contract |
+| `getter` | a view function returns the expected value | when simulation is unavailable |
+| `both` | the flag flips **and** the simulation passes | strictest; avoids a flag that flips early |
+
+`discover` reads the verified ABI from Blockscout and prints a ranked list of
+candidates for both, plus a config snippet you can paste in. Team-only
+entrypoints (`ownerMint`, `devMint`, `reserve…`) are scored down so the public
+one surfaces first.
+
+## Latency
+
+Each wallet signs its transaction ahead of time and re-signs every
+`gas.resign_interval_s` so the fees never go stale. When the probe succeeds, the
+only remaining work is one `eth_sendRawTransaction` — no estimation, no nonce
+lookup, no signing in the hot path.
+
+Two knobs matter more than the code: run it on a box near the RPC provider, and
+use a dedicated endpoint. `watch.poll_interval_ms` below ~250ms will get a public
+endpoint to rate-limit you, which is slower than polling politely. Put the
+dedicated provider in `rpc_url` and leave the public one in `fallback_rpc_urls` —
+the client rotates endpoints on any transport failure, so a throttled provider
+degrades instead of taking the run down.
+
+## Safety rails
+
+- **`dry_run = true` by default.** Signing, probing and firing all run; only the
+  broadcast is skipped. `--live` is the only way to spend anything.
+- **`gas.max_fee_gwei` is a hard ceiling.** If the base fee climbs above it the
+  bot holds and logs, rather than paying whatever the drop demands.
+- **`safety.max_total_spend_eth`** is checked in preflight against the worst case
+  across every wallet — mint value plus `gas_limit × max_fee`.
+- **`mint.max_per_wallet`** rejects a wallets file that asks for more than the
+  drop allows.
+- **Address confirmation.** Give a wallet an `address` and the bot refuses to run
+  if the key derives a different one — it catches a mispasted key before the drop,
+  not after.
+- **`safety.max_attempts_per_wallet`** bounds the retry loop. An on-chain revert
+  (someone else took the supply) re-arms with a fresh nonce; an underpriced
+  rejection re-signs with bumped fees; insufficient funds stops that wallet.
+- Every action lands in `mintbot.jsonl` as one JSON object per line.
+
+## Keys
+
+Private keys are never written into any file this repo tracks. A wallet entry
+names either an environment variable or an encrypted keystore:
+
+```toml
+[[wallet]]
+label = "main"
+key_env = "MINT_KEY_MAIN"          # export MINT_KEY_MAIN=0x…
+address = "0xYourAddress"          # optional guard, strongly recommended
+quantity = 1
+
+[[wallet]]
+label = "alt1"
+keystore = "~/keys/alt1.json"      # encrypted keystore JSON
+password_env = "ALT1_PASSWORD"     # omit to be prompted instead
+```
+
+Prefer the keystore form. `mintbot.toml`, `wallets.toml` and `mintbot.jsonl` are
+all gitignored, and `Wallet.__repr__` redacts the key so it cannot leak through a
+traceback or a log line.
+
+Use wallets whose balance you would be willing to lose. A bot that holds a
+signed transaction is only as safe as the machine it runs on.
+
+## Allowlist phases
+
+If the mint takes a merkle proof, set the arguments and give each wallet its own
+proof:
+
+```toml
+# mintbot.toml
+[mint]
+function = "allowlistMint"
+args = ["{quantity}", "{proof}"]
+
+# wallets.toml
+[[wallet]]
+label = "main"
+key_env = "MINT_KEY_MAIN"
+proof = ["0x…", "0x…"]
+```
+
+`{quantity}`, `{address}` and `{proof}` are filled in per wallet.
+
+## Troubleshooting
+
+| symptom | cause |
+| --- | --- |
+| `no contract code at 0x…` | wrong address, or right address on the wrong chain |
+| `function 'mint' is not in the ABI` | run `discover`, then use the name it prints |
+| `is not payable, but [mint].price is …` | the price belongs on a different function, or the mint is free |
+| `cannot estimate gas yet` | normal before the drop — set `gas.gas_limit` explicitly |
+| `base fee is … above your ceiling` | raise `gas.max_fee_gwei`, or accept the miss |
+| liveness probe stays closed after the announced time | the phase flag may lag the announcement; `simulate` fires on the contract, not the tweet |
+
+## What it does not do
+
+It does not find the contract address for you, know the mint price, or bypass
+anything. If a drop is per-wallet limited or allowlist gated, the bot mints
+exactly what the contract lets each of your wallets mint. Some projects treat
+multi-wallet minting as a rules violation and revoke; that is between you and
+the project, so read their terms before pointing many wallets at one drop.
+
+## Tests
+
+```
+pip install pytest
+python -m pytest tests/ -q
+```
+
+No test touches an external network. `tests/test_integration.py` runs the full
+watch/arm/fire loop against a stub JSON-RPC node on `127.0.0.1`, including real
+signing and signature recovery from the broadcast bytes.

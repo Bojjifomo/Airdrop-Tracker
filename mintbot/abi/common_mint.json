@@ -1,0 +1,18 @@
+[
+  {"type":"function","name":"mint","stateMutability":"payable","inputs":[{"name":"quantity","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"mint","stateMutability":"payable","inputs":[],"outputs":[]},
+  {"type":"function","name":"mint","stateMutability":"payable","inputs":[{"name":"to","type":"address"},{"name":"quantity","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"publicMint","stateMutability":"payable","inputs":[{"name":"quantity","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"mintPublic","stateMutability":"payable","inputs":[{"name":"quantity","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"allowlistMint","stateMutability":"payable","inputs":[{"name":"quantity","type":"uint256"},{"name":"proof","type":"bytes32[]"}],"outputs":[]},
+  {"type":"function","name":"whitelistMint","stateMutability":"payable","inputs":[{"name":"quantity","type":"uint256"},{"name":"proof","type":"bytes32[]"}],"outputs":[]},
+  {"type":"function","name":"claim","stateMutability":"payable","inputs":[{"name":"quantity","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"totalSupply","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint256"}]},
+  {"type":"function","name":"maxSupply","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint256"}]},
+  {"type":"function","name":"balanceOf","stateMutability":"view","inputs":[{"name":"owner","type":"address"}],"outputs":[{"name":"","type":"uint256"}]},
+  {"type":"function","name":"saleState","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint8"}]},
+  {"type":"function","name":"mintActive","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"bool"}]},
+  {"type":"function","name":"paused","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"bool"}]},
+  {"type":"function","name":"price","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint256"}]},
+  {"type":"function","name":"mintPrice","stateMutability":"view","inputs":[],"outputs":[{"name":"","type":"uint256"}]}
+]

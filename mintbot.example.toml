@@ -1,0 +1,68 @@
+# mintbot config — copy to mintbot.toml and fill in the drop-specific values.
+#
+#   cp mintbot.example.toml mintbot.toml
+#   python -m mintbot discover      # fetches the ABI, suggests [mint] / [watch]
+#   python -m mintbot preflight     # checks funds, gas, ABI, liveness
+#   python -m mintbot run --live    # arms the wallets and waits for the phase
+#
+# Pre-filled for Robinhood Chain mainnet. Every value below is a guess until you
+# confirm it against the project's own announcement — especially price.
+
+wallets_file = "wallets.toml"      # gitignored; holds key references, never keys
+log_file = "mintbot.jsonl"         # append-only audit trail of every action
+
+[chain]
+rpc_url = "https://rpc.mainnet.chain.robinhood.com"
+chain_id = 4663
+# The public endpoint is rate limited. Put a dedicated provider first on drop day
+# and leave the public one as a fallback.
+fallback_rpc_urls = []
+explorer_api = "https://robinhoodchain.blockscout.com/api"
+request_timeout = 10.0
+
+[contract]
+address = "0x0000000000000000000000000000000000000000"   # <- the mint contract
+abi_file = "abi/mint.json"                               # written by `discover`
+
+[mint]
+# The function that opens the public/allowlist phase. Placeholders are filled in
+# per wallet: {quantity}, {address}, {proof}.
+function = "mint"
+args = ["{quantity}"]
+price = "0 eth"            # per token; accepts "0.01 eth", "5 gwei", or raw wei
+quantity = 1               # default per wallet; wallets.toml can override
+max_per_wallet = 1         # hard ceiling — a wallet asking for more is rejected
+
+[gas]
+max_fee_gwei = 5.0         # absolute ceiling; the bot holds rather than overpay
+priority_fee_gwei = 0.01
+gas_limit = 250000         # "estimate" works, but a fixed limit is faster and
+                           # survives the pre-drop period when estimation reverts
+gas_limit_buffer = 1.30    # applied only when estimating
+bump_percent = 25          # fee bump per retry, capped by max_fee_gwei
+resign_interval_s = 5.0    # re-sign this often so fees never go stale
+legacy = false             # true only on chains without EIP-1559
+
+[watch]
+# "simulate" is the most reliable signal: the bot eth_calls the real mint from
+# the real wallet every poll, and fires the instant the call stops reverting.
+# That covers allowlist gating, per-wallet caps and price checks for free.
+# "getter" reads a phase flag instead; "both" requires the flag AND a clean
+# simulation before firing.
+mode = "simulate"
+poll_interval_ms = 400     # per wallet; below ~250ms most public RPCs throttle
+jitter_ms = 120            # spreads wallets out so they do not poll in lockstep
+# start_at = "2026-08-20T15:00:00Z"    # do not even poll before this
+# deadline_at = "2026-08-20T17:00:00Z" # give up after this
+
+[watch.getter]
+# Only used when mode is "getter" or "both".
+# function = "saleState"
+# expect = 1
+
+[safety]
+dry_run = true             # --live on the run command overrides this
+max_total_spend_eth = 0.5  # worst-case across all wallets; 0 disables the check
+max_attempts_per_wallet = 3
+confirm = true             # type MINT before a live run; --yes skips it
+stop_on_first_success = false   # true = stop every wallet once any one mints

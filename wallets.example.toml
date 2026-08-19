@@ -1,0 +1,29 @@
+# Copy to wallets.toml (gitignored) and edit.
+#
+# Private keys are NEVER written in this file. Each entry points at either an
+# environment variable holding the key, or an encrypted keystore JSON file.
+# Prefer the keystore form: an exported key sitting in your shell history or in
+# a plaintext env file is the single most common way people lose a wallet.
+
+[[wallet]]
+label = "main"
+key_env = "MINT_KEY_MAIN"          # export MINT_KEY_MAIN=0xabc…
+address = "0x0000000000000000000000000000000000000000"  # optional but recommended:
+                                   # the bot refuses to run if the key derives
+                                   # a different address than this
+quantity = 1
+
+[[wallet]]
+label = "alt1"
+keystore = "~/keys/alt1.json"      # geth/web3 encrypted keystore
+password_env = "ALT1_PASSWORD"     # omit to be prompted interactively instead
+quantity = 1
+
+[[wallet]]
+label = "alt2"
+key_env = "MINT_KEY_ALT2"
+quantity = 1
+enabled = false                    # loaded but skipped
+# Merkle proof for an allowlist phase, if the mint function takes one.
+# Use it together with args = ["{quantity}", "{proof}"] in mintbot.toml.
+# proof = ["0x1234…", "0xabcd…"]

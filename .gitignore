@@ -3,6 +3,12 @@
 .env
 *.key
 
+# --- mint bot: local config, fetched ABIs, and run logs ---
+mintbot.toml
+wallets.toml
+mintbot.jsonl
+/abi/
+
 # --- app runtime data (regenerated; use the sidebar backup to keep a copy) ---
 airdrops.json
 airdrops_backup.json
