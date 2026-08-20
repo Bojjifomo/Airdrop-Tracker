@@ -55,7 +55,7 @@ st.set_page_config(page_title="Mint Bot", page_icon="🤖", layout="wide")
 st.markdown(
     """<style>
 .block-container {max-width: 1200px;}
-.mono {font-family:monospace;font-size:12px;color:#666;}
+.mono {font-family:monospace;font-size:12px;color:#666;white-space:nowrap;}
 .pill {font-family:monospace;font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid #bbb;}
 </style>""",
     unsafe_allow_html=True,
@@ -147,7 +147,7 @@ def render_wallets_tab() -> None:
         st.info("No wallets yet. Add one below — the key is encrypted before it touches disk.")
     for entry in entries:
         with st.container(border=True):
-            cols = st.columns([3, 4, 2, 2, 1])
+            cols = st.columns([2, 5, 2, 2, 1])
             cols[0].markdown(
                 f"**{entry.label}**  \n<span class='pill'>{entry.source}</span>",
                 unsafe_allow_html=True,
